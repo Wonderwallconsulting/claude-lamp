@@ -81,20 +81,31 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.wonderwallit.murray-
 to pick the effect and colours of every state, a global brightness, and a
 **manual** mode that holds one effect regardless of state. **Probar** shows an
 effect for 8 s via `~/.murray-lamp/preview.json`; **Guardar** writes
-`~/.murray-lamp/config.json`, which `lamp.LampPlanner` hot-reloads (mtime) —
+`~/.murray-lamp/config.json` (mirrored to the OneDrive `Murray lamp/` folder
+so it survives migrations), which `lamp.LampPlanner` hot-reloads (mtime) —
 no restart. Effects are validated against `THEME_CATALOG` on both sides so a
 malformed theme can never reach the firmware.
+
+Also in the panel: **duraciones** (seconds per timed state, pushed live into
+`StateMachine.timing`), **apagado automático** (`LEDOFF` after N idle minutes
+and/or inside a night window; activity still lights the lamp), and **escenas**
+(named presets for manual mode).
 
 ```bash
 cp com.wonderwallit.murray-panel.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.wonderwallit.murray-panel.plist
 ```
 
-## Claude Code integration
+## Claude Code / Cursor integration
 
-Claude Code hooks call `claude_hook.sh <HookEventName>`, which appends
+Agent hooks call `claude_hook.sh <HookEventName>`, which appends
 `<epoch> <HookEventName>` to `~/.murray-lamp/claude-events.log`. The daemon
-tails that file like the Hermes logs (see `CLAUDE_HOOK_EVENTS`):
+tails that file like the Hermes logs (see `CLAUDE_HOOK_EVENTS`). Cursor uses
+`~/.cursor/hooks.json` with observational hooks only (`afterAgentThought`,
+`postToolUse`, `afterFileEdit`, `afterShellExecution`, `afterAgentResponse`,
+`stop`, `postToolUseFailure`) — never permission hooks, so the lamp can never
+block the agent. Hermes: every profile under `~/.hermes/profiles/*/logs` is
+tailed too (`hermes_log_paths`).
 
 | Hook event | Lamp |
 |---|---|

@@ -117,6 +117,49 @@ class TestStateMachine(unittest.TestCase):
         with self.assertRaises(ValueError):
             StateMachine().feed("dancing", 0.0)
 
+    def test_timing_is_configurable_at_runtime(self):
+        from presence_daemon import DEFAULT_TIMING
+        m = StateMachine()
+        self.assertEqual(m.timing, DEFAULT_TIMING)
+        m.timing = {**DEFAULT_TIMING, "speaking": 10.0, "happy": 5.0, "notify": 1.0}
+        m.feed("speaking", 0.0)
+        self.assertEqual(m.current(9.0), "speaking")
+        self.assertEqual(m.current(14.0), "happy")
+        self.assertEqual(m.current(15.5), "idle")
+        m.feed("notify", 20.0)
+        self.assertEqual(m.current(21.5), "idle")
+
+
+class TestCursorEvents(unittest.TestCase):
+    def test_cursor_hook_names_map(self):
+        for name in ("afterAgentThought", "postToolUse", "afterFileEdit", "afterShellExecution"):
+            self.assertEqual(parse_claude_event_line(f"1 {name}"), "thinking", name)
+        self.assertEqual(parse_claude_event_line("1 afterAgentResponse"), "speaking")
+        self.assertEqual(parse_claude_event_line("1 stop"), "speaking")
+        self.assertEqual(parse_claude_event_line("1 postToolUseFailure"), "error")
+
+
+class TestHermesProfiles(unittest.TestCase):
+    def test_all_profile_logs_are_tailed(self):
+        import tempfile
+        from presence_daemon import hermes_log_paths
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / ".hermes/logs").mkdir(parents=True)
+            (home / ".hermes/logs/agent.log").write_text("")
+            for prof in ("inversor", "sapiens"):
+                d = home / f".hermes/profiles/{prof}/logs"
+                d.mkdir(parents=True)
+                (d / "agent.log").write_text("")
+            (home / ".hermes/profiles/sapiens/logs/gateway.error.log").write_text("")
+            agent, gateway = hermes_log_paths(home)
+            self.assertEqual(sorted(p.parent.parent.name if p.parent.name == "logs" and p.parent.parent.name != ".hermes" else "default" for p in agent),
+                             ["default", "inversor", "sapiens"])
+            # gateway logs are listed for every profile even before the file exists
+            self.assertEqual([p.parent.parent.name for p in gateway if "profiles" in str(p)],
+                             ["inversor", "sapiens"])
+            self.assertIn(home / ".hermes/logs/gateway.error.log", gateway)
+
 
 class TestClaudeEvents(unittest.TestCase):
     """Lines appended by claude_hook.sh: '<epoch> <HookEventName>'."""
@@ -329,6 +372,63 @@ class TestLamp(unittest.TestCase):
             os.utime(cfg_path, (time.time() + 10, time.time() + 10))
             self.assertEqual(p.plan("error", 21.0)[-1], "COLOR009009009")
             self.assertIsNone(p.plan("thinking", 22.0))
+
+    def test_config_timing_autooff_presets_validated(self):
+        import json, tempfile
+        from lamp import DEFAULT_CONFIG, load_config
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(json.dumps({
+                "timing": {"speaking": 9, "happy": "x", "bogus": 1},
+                "auto_off": {"idle_minutes": 15, "night": {"enabled": True, "from": "23:30", "to": "07:00"}},
+                "presets": [{"name": "Fuego", "effect": {"theme": "FIRE1", "colors": []}},
+                            {"name": "Malo", "effect": {"theme": "NOPE", "colors": []}},
+                            "garbage"],
+            }))
+            cfg = load_config(path)
+            self.assertEqual(cfg["timing"]["speaking"], 9.0)
+            self.assertEqual(cfg["timing"]["happy"], DEFAULT_CONFIG["timing"]["happy"])
+            self.assertNotIn("bogus", cfg["timing"])
+            self.assertEqual(cfg["auto_off"]["idle_minutes"], 15)
+            self.assertEqual(cfg["auto_off"]["night"], {"enabled": True, "from": "23:30", "to": "07:00"})
+            self.assertEqual([p["name"] for p in cfg["presets"]], ["Fuego"])
+            path.write_text(json.dumps({"auto_off": {"night": {"enabled": True, "from": "25:99", "to": "x"}}}))
+            self.assertEqual(load_config(path)["auto_off"]["night"], DEFAULT_CONFIG["auto_off"]["night"])
+
+    def test_night_window(self):
+        from lamp import in_night_window
+        self.assertTrue(in_night_window("23:00", "08:00", 23 * 60 + 30))
+        self.assertTrue(in_night_window("23:00", "08:00", 2 * 60))
+        self.assertFalse(in_night_window("23:00", "08:00", 12 * 60))
+        self.assertTrue(in_night_window("13:00", "15:00", 14 * 60))   # same-day window
+        self.assertFalse(in_night_window("13:00", "15:00", 15 * 60))  # end exclusive
+
+    def test_planner_auto_off(self):
+        import json, os, tempfile, time
+        from lamp import LampPlanner, load_config, save_config
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "config.json"
+            cfg = load_config(cfg_path)
+            cfg["auto_off"] = {"idle_minutes": 1, "night": {"enabled": False, "from": "23:00", "to": "08:00"}}
+            save_config(cfg, cfg_path)
+            p = LampPlanner(config_path=cfg_path, preview_path=Path(tmp) / "preview.json")
+            p.minute_of_day = lambda: 12 * 60
+            self.assertEqual(p.plan("idle", 0.0)[-1], "COLOR040220080")
+            self.assertIsNone(p.plan("idle", 30.0))
+            self.assertEqual(p.plan("idle", 61.0), ["LEDOFF"])       # 1 min idle -> off
+            self.assertIsNone(p.plan("idle", 90.0))                  # stays off, no spam
+            self.assertEqual(p.plan("thinking", 95.0)[-1][:11], "THEME.BEAT1")  # activity wakes it
+            self.assertEqual(p.plan("idle", 96.0)[-1], "COLOR040220080")        # idle timer restarts
+            # night window: off as soon as idle, but activity still shows
+            cfg["auto_off"] = {"idle_minutes": 0, "night": {"enabled": True, "from": "23:00", "to": "08:00"}}
+            save_config(cfg, cfg_path)
+            os.utime(cfg_path, (time.time() + 5, time.time() + 5))
+            p.minute_of_day = lambda: 23 * 60 + 30
+            self.assertEqual(p.plan("idle", 100.0), ["LEDOFF"])
+            self.assertEqual(p.plan("error", 101.0)[-1][:11], "THEME.BEAT3")
+            self.assertEqual(p.plan("idle", 102.0), ["LEDOFF"])
+            p.minute_of_day = lambda: 9 * 60
+            self.assertEqual(p.plan("idle", 103.0)[-1], "COLOR040220080")
 
     def test_manual_mode_overrides_state(self):
         from lamp import DEFAULT_CONFIG, commands_for_state

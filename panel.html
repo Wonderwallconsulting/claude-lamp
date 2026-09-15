@@ -42,10 +42,34 @@
 <div class="card" style="margin-top:12px" id="manualCard">
   <h2>Manual <span class="badge" id="manualBadge">automático</span></h2>
   <p class="sub" style="margin:0 0 8px">Deja la lámpara en un efecto fijo, ignorando los estados. Como la app del móvil.</p>
+  <div class="row" style="margin:0 0 10px">
+    <label class="small">Escena:</label>
+    <select id="presetSel" style="width:auto;min-width:160px"></select>
+    <button id="presetSave">Guardar como escena…</button>
+    <button id="presetDel" class="danger">Borrar escena</button>
+  </div>
   <div id="manualEditor"></div>
   <div class="row">
+    <button id="manualTest">Probar</button>
     <button id="manualOn" class="primary">Activar manual</button>
     <button id="manualOff">Volver a automático</button>
+  </div>
+</div>
+
+<div class="grid" style="margin-top:12px">
+  <div class="card">
+    <h2>Duraciones (segundos)</h2>
+    <div id="timing"></div>
+  </div>
+  <div class="card">
+    <h2>Apagado automático</h2>
+    <label class="small">Apagar tras <span id="idleMinVal"></span> min en reposo (0 = nunca)</label>
+    <input type="range" id="idleMin" min="0" max="180" step="5">
+    <div class="row">
+      <label><input type="checkbox" id="nightOn"> Modo noche: apagar en reposo entre</label>
+      <input type="time" id="nightFrom"> <span>y</span> <input type="time" id="nightTo">
+    </div>
+    <p class="sub" style="margin:8px 0 0;font-size:13px">La actividad (pensando, error…) sigue encendiendo la lámpara; solo el reposo se apaga.</p>
   </div>
 </div>
 
@@ -147,17 +171,65 @@ function buildManual() {
   badge.classList.toggle('on', !!CFG.manual);
 }
 
+function buildTiming() {
+  const box = document.getElementById('timing'); box.innerHTML = '';
+  for (const key of Object.keys(DATA.defaults.timing)) {
+    const row = document.createElement('div'); row.className = 'row';
+    row.innerHTML = `<label class="small" style="flex:1">${DATA.timing_labels[key] || key}</label>
+      <input type="number" min="0.5" max="600" step="0.5" style="width:90px" data-timing="${key}">`;
+    row.querySelector('input').value = CFG.timing[key];
+    box.append(row);
+  }
+}
+
+function buildAutoOff() {
+  const a = CFG.auto_off;
+  const idle = document.getElementById('idleMin'); idle.value = a.idle_minutes;
+  document.getElementById('idleMinVal').textContent = idle.value;
+  idle.oninput = () => document.getElementById('idleMinVal').textContent = idle.value;
+  document.getElementById('nightOn').checked = a.night.enabled;
+  document.getElementById('nightFrom').value = a.night.from;
+  document.getElementById('nightTo').value = a.night.to;
+}
+
+function buildPresets() {
+  const sel = document.getElementById('presetSel'); sel.innerHTML = '<option value="">— elegir —</option>';
+  CFG.presets.forEach((p, i) => { const o = document.createElement('option'); o.value = i; o.textContent = p.name; sel.append(o); });
+  sel.onchange = () => {
+    const p = CFG.presets[+sel.value]; if (!p) return;
+    CFG._manualDraft = JSON.parse(JSON.stringify(p.effect));
+    const ed = document.getElementById('manualEditor'); ed.innerHTML = ''; ed.append(effectEditor(CFG._manualDraft, () => {}));
+  };
+}
+
+function readTiming() {
+  const t = {};
+  document.querySelectorAll('[data-timing]').forEach(i => t[i.dataset.timing] = +i.value);
+  return t;
+}
+
 function payload() {
   const states = {}; for (const s in CFG.states) states[s] = cleanEffect(CFG.states[s]);
-  return { brightness: +document.getElementById('brightness').value, manual: CFG.manual ? cleanEffect(CFG.manual) : null, states };
+  return {
+    brightness: +document.getElementById('brightness').value,
+    manual: CFG.manual ? cleanEffect(CFG.manual) : null,
+    states,
+    timing: readTiming(),
+    auto_off: { idle_minutes: +document.getElementById('idleMin').value,
+                night: { enabled: document.getElementById('nightOn').checked,
+                         from: document.getElementById('nightFrom').value || '23:00',
+                         to: document.getElementById('nightTo').value || '08:00' } },
+    presets: CFG.presets,
+  };
 }
 
 async function save(extra) {
   const body = Object.assign(payload(), extra || {});
   const r = await api('/api/config', body);
   const wantedManual = body.manual, gotManual = r.config.manual;
-  CFG = r.config; CFG._manualDraft = null;
-  buildStates(); buildManual();
+  const draft = CFG._manualDraft;
+  CFG = r.config; CFG._manualDraft = gotManual ? null : draft;
+  buildStates(); buildManual(); buildTiming(); buildAutoOff(); buildPresets();
   if (wantedManual && !gotManual) flash('El efecto manual no es válido', 4000);
   else flash(gotManual ? 'Guardado ✓ (manual activo)' : 'Guardado ✓');
 }
@@ -167,11 +239,23 @@ async function init() {
   const bri = document.getElementById('brightness'); bri.value = CFG.brightness;
   document.getElementById('briVal').textContent = bri.value;
   bri.oninput = () => document.getElementById('briVal').textContent = bri.value;
-  buildStates(); buildManual();
+  buildStates(); buildManual(); buildTiming(); buildAutoOff(); buildPresets();
   document.getElementById('save').onclick = () => save();
-  document.getElementById('reset').onclick = () => { if (confirm('¿Volver a los valores por defecto?')) { CFG = JSON.parse(JSON.stringify(DATA.defaults)); bri.value = CFG.brightness; document.getElementById('briVal').textContent = bri.value; buildStates(); buildManual(); } };
+  document.getElementById('reset').onclick = () => { if (confirm('¿Volver a los valores por defecto?')) { CFG = JSON.parse(JSON.stringify(DATA.defaults)); bri.value = CFG.brightness; document.getElementById('briVal').textContent = bri.value; buildStates(); buildManual(); buildTiming(); buildAutoOff(); buildPresets(); } };
   document.getElementById('manualOn').onclick = () => save({ manual: cleanEffect(CFG._manualDraft) });
   document.getElementById('manualOff').onclick = () => save({ manual: null });
+  document.getElementById('manualTest').onclick = async () => { const r = await api('/api/preview', { effect: cleanEffect(CFG._manualDraft) }); flash(r.ok ? `Mostrando ${DATA.preview_seconds}s…` : r.error); };
+  document.getElementById('presetSave').onclick = () => {
+    const name = prompt('Nombre de la escena:'); if (!name) return;
+    const eff = cleanEffect(CFG._manualDraft);
+    const i = CFG.presets.findIndex(p => p.name === name);
+    if (i >= 0) CFG.presets[i].effect = eff; else CFG.presets.push({ name, effect: eff });
+    save();
+  };
+  document.getElementById('presetDel').onclick = () => {
+    const sel = document.getElementById('presetSel'); const p = CFG.presets[+sel.value];
+    if (p && confirm(`¿Borrar la escena "${p.name}"?`)) { CFG.presets.splice(+sel.value, 1); save(); }
+  };
   const tick = async () => { try { const s = await api('/api/status'); document.getElementById('status').textContent = s.log.join('\n'); } catch {} };
   tick(); setInterval(tick, 3000);
 }

@@ -29,6 +29,16 @@ log = logging.getLogger("murray-presence")
 AGENT_LOG = Path.home() / ".hermes/logs/agent.log"
 GATEWAY_ERROR_LOG = Path.home() / ".hermes/logs/gateway.error.log"
 
+
+def hermes_log_paths(home: Path = Path.home()) -> tuple[list[Path], list[Path]]:
+    """agent.log / gateway.error.log of the default profile plus every named profile."""
+    agent = [home / ".hermes/logs/agent.log"]
+    gateway = [home / ".hermes/logs/gateway.error.log"]
+    for prof in sorted((home / ".hermes/profiles").glob("*/logs")):
+        agent.append(prof / "agent.log")
+        gateway.append(prof / "gateway.error.log")
+    return agent, gateway
+
 # Patterns matched against real Hermes log lines (see tests for real samples).
 RE_TURN = re.compile(r"conversation turn:")
 RE_API_CALL = re.compile(r"API call #\d+")
@@ -62,6 +72,7 @@ def parse_gateway_error_line(line: str):
 CLAUDE_EVENTS_LOG = Path.home() / ".murray-lamp/claude-events.log"
 
 CLAUDE_HOOK_EVENTS = {
+    # Claude Code (~/.claude/settings.json)
     "UserPromptSubmit": "thinking",
     "PreToolUse": "thinking",
     "PostToolUse": "thinking",
@@ -70,6 +81,16 @@ CLAUDE_HOOK_EVENTS = {
     "PostToolUseFailure": "error",
     "Notification": "waiting",
     "PermissionRequest": "waiting",
+    # Cursor (~/.cursor/hooks.json) — observational hooks only, never permission ones
+    "afterAgentThought": "thinking",
+    "postToolUse": "thinking",
+    "afterFileEdit": "thinking",
+    "afterShellExecution": "thinking",
+    "afterMCPExecution": "thinking",
+    "subagentStart": "thinking",
+    "afterAgentResponse": "speaking",
+    "stop": "speaking",
+    "postToolUseFailure": "error",
 }
 
 
@@ -91,6 +112,15 @@ ERROR_SECONDS = 6.0
 NOTIFY_SECONDS = 3.0
 THINKING_TTL = 20.0  # thinking persists while turn/API-call lines keep arriving
 
+# Editable from the panel (config.json "timing"); StateMachine.timing is swapped live.
+DEFAULT_TIMING = {
+    "speaking": SPEAKING_SECONDS,
+    "happy": HAPPY_SECONDS,
+    "error": ERROR_SECONDS,
+    "notify": NOTIFY_SECONDS,
+    "thinking": THINKING_TTL,
+}
+
 PRIORITY = ("error", "speaking", "happy", "thinking", "notify", "idle")
 
 
@@ -99,22 +129,26 @@ class StateMachine:
     """Timed, priority-ordered avatar state derived from log events."""
 
     expires: dict = field(default_factory=dict)  # state -> monotonic expiry
+    timing: dict = field(default_factory=lambda: dict(DEFAULT_TIMING))
+
+    def _t(self, key: str) -> float:
+        return float(self.timing.get(key, DEFAULT_TIMING[key]))
 
     def feed(self, event: str, now: float) -> None:
         if event == "thinking":
-            self.expires["thinking"] = now + THINKING_TTL
+            self.expires["thinking"] = now + self._t("thinking")
         elif event == "speaking":
-            self.expires["speaking"] = now + SPEAKING_SECONDS
-            self.expires["happy"] = now + SPEAKING_SECONDS + HAPPY_SECONDS
+            self.expires["speaking"] = now + self._t("speaking")
+            self.expires["happy"] = now + self._t("speaking") + self._t("happy")
             # A finished response ends the thinking window.
             self.expires.pop("thinking", None)
         elif event == "error":
-            self.expires["error"] = now + ERROR_SECONDS
+            self.expires["error"] = now + self._t("error")
         elif event == "notify":
-            self.expires["notify"] = now + NOTIFY_SECONDS
+            self.expires["notify"] = now + self._t("notify")
         elif event == "waiting":
             # Claude is blocked on the user: notify must win over thinking.
-            self.expires["notify"] = now + NOTIFY_SECONDS
+            self.expires["notify"] = now + self._t("notify")
             self.expires.pop("thinking", None)
         else:
             raise ValueError(f"Unknown event: {event!r}")
@@ -197,11 +231,11 @@ async def observe(machine: StateMachine, transitions, from_start=False,
     logs and replayed in timestamp order so speaking→happy→idle cascades
     survive dry-run verification.
     """
-    tails = [
-        (LogTail(agent_log, from_start), parse_agent_line),
-        (LogTail(gateway_log, from_start), parse_gateway_error_line),
-        (LogTail(claude_log, from_start), parse_claude_event_line),
-    ]
+    agent_logs = agent_log if isinstance(agent_log, (list, tuple)) else [agent_log]
+    gateway_logs = gateway_log if isinstance(gateway_log, (list, tuple)) else [gateway_log]
+    tails = [(LogTail(p, from_start), parse_agent_line) for p in agent_logs]
+    tails += [(LogTail(p, from_start), parse_gateway_error_line) for p in gateway_logs]
+    tails.append((LogTail(claude_log, from_start), parse_claude_event_line))
     last_state = None
     deadline = time.monotonic() + stop_after if stop_after else math.inf
 
@@ -336,7 +370,11 @@ async def run_daemon(args):
     def report(state, line):
         log.info("state -> %-8s | %s", state, line[:160])
 
-    tasks = [asyncio.create_task(observe(machine, report), name="observe")]
+    agent_logs, gateway_logs = hermes_log_paths()
+    log.info("Tailing %d Hermes agent logs", len(agent_logs))
+    tasks = [asyncio.create_task(
+        observe(machine, report, agent_log=agent_logs, gateway_log=gateway_logs),
+        name="observe")]
     if not getattr(args, "lamp_only", False):
         tasks.append(asyncio.create_task(drive_panel(machine, args.device), name="panel"))
     if not getattr(args, "no_lamp", False):

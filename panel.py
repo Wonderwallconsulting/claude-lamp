@@ -13,26 +13,29 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from lamp import (CONFIG_PATH, DEFAULT_CONFIG, PREVIEW_PATH, PREVIEW_SECONDS,
-                  THEME_CATALOG, _valid_effect, load_config, save_config)
+                  THEME_CATALOG, _valid_effect, load_config, merge_config, save_config)
 
 HTML_PATH = Path(__file__).with_name("panel.html")
 LOG_PATH = Path.home() / "Library/Logs/murray-lamp.log"
+# Synced folder: a copy of the config survives the next machine migration.
+MIRROR_PATH = Path.home() / ("Library/CloudStorage/OneDrive-Personal/Documentos/"
+                             "Cursor projects/Murray lamp/config.json")
 STATE_LABELS = {
     "idle": "Reposo", "thinking": "Pensando", "speaking": "Hablando",
     "happy": "Contento", "error": "Error", "notify": "Esperándote",
 }
+TIMING_LABELS = {
+    "speaking": "Hablando", "happy": "Contento", "error": "Error",
+    "notify": "Esperándote", "thinking": "Pensando (sin actividad)",
+}
 
 
-def sanitize_config(raw: dict) -> dict:
-    """Keep only valid effects for known states; never trust the browser."""
-    cfg = load_config(Path("/nonexistent"))  # defaults
-    if isinstance(raw.get("brightness"), (int, float)):
-        cfg["brightness"] = max(0, min(120, int(raw["brightness"])))
-    cfg["manual"] = raw["manual"] if _valid_effect(raw.get("manual")) else None
-    for state, effect in (raw.get("states") or {}).items():
-        if state in cfg["states"] and _valid_effect(effect):
-            cfg["states"][state] = effect
-    return cfg
+def mirror_config(cfg: dict) -> None:
+    try:
+        if MIRROR_PATH.parent.is_dir():
+            MIRROR_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False))
+    except OSError:
+        pass
 
 
 def recent_log(n: int = 6) -> list[str]:
@@ -78,6 +81,7 @@ class Handler(BaseHTTPRequestHandler):
                 "defaults": DEFAULT_CONFIG,
                 "catalog": THEME_CATALOG,
                 "labels": STATE_LABELS,
+                "timing_labels": TIMING_LABELS,
                 "preview_seconds": PREVIEW_SECONDS,
             })
         elif self.path == "/api/status":
@@ -87,8 +91,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == "/api/config":
-            cfg = sanitize_config(self._body())
+            cfg = merge_config(self._body())
             save_config(cfg, self.config_path)
+            mirror_config(cfg)
             self._json(200, {"ok": True, "config": cfg})
         elif self.path == "/api/preview":
             effect = self._body().get("effect")

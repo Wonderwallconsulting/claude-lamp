@@ -60,6 +60,18 @@ _GREEN, _PURPLE, _RED, _WARM = [40, 220, 80], [200, 0, 255], [255, 40, 40], [255
 DEFAULT_CONFIG: dict = {
     "brightness": DEFAULT_BRIGHTNESS,
     "manual": None,  # effect dict to hold regardless of state, or None
+    # Seconds per timed state (mirrors presence_daemon.DEFAULT_TIMING).
+    "timing": {"speaking": 4.0, "happy": 2.0, "error": 6.0, "notify": 3.0, "thinking": 20.0},
+    # idle_minutes: LEDOFF after that long in idle (0 = never). night: LEDOFF
+    # whenever idle inside the window; activity states still light the lamp.
+    "auto_off": {"idle_minutes": 0, "night": {"enabled": False, "from": "23:00", "to": "08:00"}},
+    "presets": [
+        {"name": "Fuego", "effect": {"theme": "FIRE1", "colors": []}},
+        {"name": "Arcoíris", "effect": {"theme": "RAINBOW1", "colors": [], "speed": 20}},
+        {"name": "Lava", "effect": {"theme": "LAVA1", "colors": [[255, 60, 0], [180, 0, 0], [255, 180, 40]]}},
+        {"name": "Lectura", "effect": {"theme": None, "colors": [[255, 200, 140]]}},
+        {"name": "Océano", "effect": {"theme": "GRADIENT2", "colors": [[0, 120, 255], [0, 220, 200], [255, 255, 255]]}},
+    ],
     "states": {
         "idle": {"theme": None, "colors": [_GREEN]},
         "thinking": {"theme": "BEAT1", "colors": [_CYAN, _NAVY, _WHITE]},
@@ -137,14 +149,20 @@ def _valid_effect(effect) -> bool:
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
     """User config merged over DEFAULT_CONFIG; tolerant of missing/corrupt files."""
-    import copy
     import json
 
-    cfg = copy.deepcopy(DEFAULT_CONFIG)
     try:
         raw = json.loads(Path(path).read_text())
     except (OSError, ValueError):
-        return cfg
+        raw = {}
+    return merge_config(raw)
+
+
+def merge_config(raw) -> dict:
+    """Validate an untrusted dict (file or browser) over DEFAULT_CONFIG."""
+    import copy
+
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
     if not isinstance(raw, dict):
         return cfg
     if isinstance(raw.get("brightness"), (int, float)):
@@ -154,7 +172,46 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
     for state, effect in (raw.get("states") or {}).items():
         if state in cfg["states"] and _valid_effect(effect):
             cfg["states"][state] = effect
+    for key, val in (raw.get("timing") or {}).items():
+        if key in cfg["timing"] and isinstance(val, (int, float)) and 0 < val <= 600:
+            cfg["timing"][key] = float(val)
+    auto = raw.get("auto_off") or {}
+    if isinstance(auto.get("idle_minutes"), (int, float)) and 0 <= auto["idle_minutes"] <= 1440:
+        cfg["auto_off"]["idle_minutes"] = int(auto["idle_minutes"])
+    night = auto.get("night") or {}
+    if _valid_hhmm(night.get("from")) and _valid_hhmm(night.get("to")):
+        cfg["auto_off"]["night"] = {"enabled": bool(night.get("enabled")),
+                                    "from": night["from"], "to": night["to"]}
+    if isinstance(raw.get("presets"), list):
+        cfg["presets"] = [
+            {"name": str(p["name"])[:40], "effect": p["effect"]}
+            for p in raw["presets"]
+            if isinstance(p, dict) and p.get("name") and _valid_effect(p.get("effect"))
+        ][:50]
     return cfg
+
+
+def _valid_hhmm(s) -> bool:
+    return _parse_hhmm(s) is not None
+
+
+def _parse_hhmm(s) -> Optional[int]:
+    """'HH:MM' -> minute of day, or None."""
+    if not isinstance(s, str) or len(s) != 5 or s[2] != ":":
+        return None
+    try:
+        h, m = int(s[:2]), int(s[3:])
+    except ValueError:
+        return None
+    return h * 60 + m if 0 <= h < 24 and 0 <= m < 60 else None
+
+
+def in_night_window(start: str, end: str, minute: int) -> bool:
+    """True if `minute` of day is inside [start, end); windows may cross midnight."""
+    a, b = _parse_hhmm(start), _parse_hhmm(end)
+    if a is None or b is None or a == b:
+        return False
+    return a <= minute < b if a < b else (minute >= a or minute < b)
 
 
 def save_config(cfg: dict, path: Path = CONFIG_PATH) -> None:
@@ -239,9 +296,24 @@ class LampPlanner:
         self._preview_seen: Optional[float] = None
         self._preview_until = -1.0
         self._last: Optional[tuple[str, ...]] = None
+        self._idle_since: Optional[float] = None
+        self.minute_of_day = lambda: time.localtime().tm_hour * 60 + time.localtime().tm_min
 
     def reset(self) -> None:
         self._last = None  # force re-apply (e.g. after reconnect)
+
+    def _should_be_off(self, state: str, now: float) -> bool:
+        if state != "idle" or self.config.get("manual"):
+            self._idle_since = None
+            return False
+        if self._idle_since is None:
+            self._idle_since = now
+        auto = self.config["auto_off"]
+        minutes = auto.get("idle_minutes", 0)
+        if minutes and now - self._idle_since >= minutes * 60:
+            return True
+        night = auto.get("night") or {}
+        return bool(night.get("enabled")) and in_night_window(night["from"], night["to"], self.minute_of_day())
 
     def _refresh_config(self) -> None:
         try:
@@ -279,7 +351,10 @@ class LampPlanner:
             return cmds
         if now < self._preview_until:
             return None
-        cmds = commands_for_state(state, config=self.config)
+        if self._should_be_off(state, now):
+            cmds = ["LEDOFF"]
+        else:
+            cmds = commands_for_state(state, config=self.config)
         if not cmds or tuple(cmds) == self._last:
             return None
         self._last = tuple(cmds)
@@ -306,6 +381,7 @@ async def drive_lamp(
         while True:
             try:
                 cmds = planner.plan(machine.current(time.monotonic()), time.monotonic())
+                machine.timing = planner.config["timing"]
                 if cmds:
                     log.info("lamp dry-run cmds=%s", cmds)
                 await asyncio.sleep(poll_interval)
@@ -333,6 +409,7 @@ async def drive_lamp(
                         raise RuntimeError("Lamp disconnected")
                     now = time.monotonic()
                     cmds = planner.plan(machine.current(now), now)
+                    machine.timing = planner.config["timing"]
                     if cmds:
                         await send_commands(client, cmds)
                     await asyncio.sleep(poll_interval)
