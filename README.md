@@ -40,6 +40,14 @@ connection) if you need the lamp to stay lit. Demo default brightness is 100
 ## Usage
 
 ```bash
+# Everything at once on a fresh Mac (venv, TCC bundle, launchd services,
+# Claude/Codex/Cursor hooks, config restored from OneDrive). Idempotent.
+./install.sh
+```
+
+Manual steps, if you prefer:
+
+```bash
 # One-time setup (Python >=3.12 required by pyidotmatrix; system python3 is 3.9)
 # e.g. uv python: ~/.local/share/uv/python/cpython-3.12-macos-aarch64-none/bin/python3.12
 python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
@@ -88,8 +96,12 @@ malformed theme can never reach the firmware.
 
 Also in the panel: **duraciones** (seconds per timed state, pushed live into
 `StateMachine.timing`), **apagado automático** (`LEDOFF` after N idle minutes
-and/or inside a night window; activity still lights the lamp), and **escenas**
-(named presets for manual mode).
+and/or inside a night window; activity still lights the lamp; the window can
+also just dim to a night brightness), **escenas** (named presets for manual
+mode), **quién trabaja** (a per-agent effect for the thinking state — hook lines
+carry the agent as a third field: `<epoch> <Event> <agent>`), and a header badge
+fed by `~/.murray-lamp/status.json` (written by `lamp.LampStatus`; a macOS
+notification fires after 5 min without BLE connection).
 
 ```bash
 cp com.wonderwallit.murray-panel.plist ~/Library/LaunchAgents/

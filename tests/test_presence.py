@@ -390,7 +390,8 @@ class TestLamp(unittest.TestCase):
             self.assertEqual(cfg["timing"]["happy"], DEFAULT_CONFIG["timing"]["happy"])
             self.assertNotIn("bogus", cfg["timing"])
             self.assertEqual(cfg["auto_off"]["idle_minutes"], 15)
-            self.assertEqual(cfg["auto_off"]["night"], {"enabled": True, "from": "23:30", "to": "07:00"})
+            self.assertEqual(cfg["auto_off"]["night"],
+                             {"enabled": True, "from": "23:30", "to": "07:00", "off": True, "brightness": None})
             self.assertEqual([p["name"] for p in cfg["presets"]], ["Fuego"])
             path.write_text(json.dumps({"auto_off": {"night": {"enabled": True, "from": "25:99", "to": "x"}}}))
             self.assertEqual(load_config(path)["auto_off"]["night"], DEFAULT_CONFIG["auto_off"]["night"])
@@ -594,3 +595,75 @@ class TestChatGPTDesktop(unittest.TestCase):
             with open(new, "a") as fh:
                 fh.write("day2 second\n")
             self.assertEqual(gt.poll(), ["day2 second"])
+
+
+class TestNightBrightnessAndAgents(unittest.TestCase):
+    def test_night_brightness_applies_inside_window(self):
+        import os, tempfile, time
+        from lamp import LampPlanner, load_config, save_config
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "config.json"
+            cfg = load_config(cfg_path)
+            cfg["auto_off"]["night"] = {"enabled": True, "from": "23:00", "to": "08:00", "off": False, "brightness": 30}
+            save_config(cfg, cfg_path)
+            p = LampPlanner(config_path=cfg_path, preview_path=Path(tmp) / "preview.json")
+            p.minute_of_day = lambda: 23 * 60 + 30
+            cmds = p.plan("thinking", 0.0)
+            self.assertIn("BRIGH030", cmds)
+            self.assertEqual(p.plan("idle", 1.0)[-1], "COLOR040220080")  # night dims but does not switch off
+            p.minute_of_day = lambda: 12 * 60
+            self.assertIn("BRIGH100", p.plan("thinking", 2.0))
+
+    def test_agent_override_for_thinking(self):
+        import copy
+        from lamp import DEFAULT_CONFIG, commands_for_state, merge_config
+        cfg = merge_config({"agents": {"codex": {"theme": "FIRE1", "colors": []},
+                                       "bogus": {"theme": "NOPE", "colors": []},
+                                       "claude": None}})
+        self.assertEqual(cfg["agents"]["codex"]["theme"], "FIRE1")
+        self.assertIsNone(cfg["agents"]["claude"])
+        self.assertNotIn("bogus", cfg["agents"])
+        self.assertEqual(commands_for_state("thinking", config=cfg, agent="codex")[-1], "THEME.FIRE1.0,")
+        self.assertEqual(commands_for_state("thinking", config=cfg, agent="claude")[-1][:11], "THEME.BEAT1")
+        self.assertEqual(commands_for_state("thinking", config=cfg, agent="unknown")[-1][:11], "THEME.BEAT1")
+        # only thinking is per-agent; speaking stays global
+        self.assertEqual(commands_for_state("speaking", config=cfg, agent="codex"),
+                         commands_for_state("speaking", config=cfg))
+
+    def test_event_line_carries_agent(self):
+        from presence_daemon import parse_claude_event_line, agent_of_event_line
+        self.assertEqual(parse_claude_event_line("1 PreToolUse claude"), "thinking")
+        self.assertEqual(agent_of_event_line("1 PreToolUse claude"), "claude")
+        self.assertEqual(agent_of_event_line("1 PreToolUse"), "claude")  # legacy lines
+        self.assertEqual(agent_of_event_line("1 stop cursor"), "cursor")
+
+    def test_state_machine_remembers_agent(self):
+        m = StateMachine()
+        m.feed("thinking", 0.0, agent="codex")
+        self.assertEqual(m.agent, "codex")
+        m.feed("thinking", 1.0)
+        self.assertEqual(m.agent, "codex")  # unspecified source keeps the last one
+        m.feed("speaking", 2.0, agent="hermes")
+        self.assertEqual(m.agent, "hermes")
+
+
+class TestLampStatus(unittest.TestCase):
+    def test_status_file_and_disconnect_alert(self):
+        import json, tempfile
+        from lamp import LampStatus
+        with tempfile.TemporaryDirectory() as tmp:
+            notes = []
+            st = LampStatus(path=Path(tmp) / "status.json", alert_after=0.0, notify=lambda t, x: notes.append(x))
+            st.set_connected(True)
+            st.update("idle", "claude")
+            data = json.loads((Path(tmp) / "status.json").read_text())
+            self.assertTrue(data["connected"]); self.assertEqual(data["agent"], "claude")
+            self.assertEqual(notes, [])
+            st.set_connected(False)
+            st.update("idle", "claude", error="boom")
+            st.update("idle", "claude", error="boom")
+            self.assertEqual(len(notes), 1)  # alert once per disconnect
+            self.assertEqual(json.loads((Path(tmp) / "status.json").read_text())["error"], "boom")
+            st.set_connected(True); st.set_connected(False)
+            st.update("idle", None)
+            self.assertEqual(len(notes), 2)  # re-armed after a reconnect

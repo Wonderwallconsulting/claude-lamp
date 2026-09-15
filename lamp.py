@@ -64,7 +64,12 @@ DEFAULT_CONFIG: dict = {
     "timing": {"speaking": 4.0, "happy": 2.0, "error": 6.0, "notify": 3.0, "thinking": 20.0},
     # idle_minutes: LEDOFF after that long in idle (0 = never). night: LEDOFF
     # whenever idle inside the window; activity states still light the lamp.
-    "auto_off": {"idle_minutes": 0, "night": {"enabled": False, "from": "23:00", "to": "08:00"}},
+    # night: inside the window, "off" switches the lamp off when idle and/or
+    # "brightness" (int or None) dims every state.
+    "auto_off": {"idle_minutes": 0,
+                 "night": {"enabled": False, "from": "23:00", "to": "08:00", "off": True, "brightness": None}},
+    # Per-agent effect for the "thinking" state (None = use states.thinking).
+    "agents": {"claude": None, "cursor": None, "codex": None, "chatgpt": None, "hermes": None},
     "presets": [
         {"name": "Fuego", "effect": {"theme": "FIRE1", "colors": []}},
         {"name": "Arcoíris", "effect": {"theme": "RAINBOW1", "colors": [], "speed": 20}},
@@ -84,7 +89,9 @@ DEFAULT_CONFIG: dict = {
 
 CONFIG_PATH = Path.home() / ".murray-lamp/config.json"
 PREVIEW_PATH = Path.home() / ".murray-lamp/preview.json"
+STATUS_PATH = Path.home() / ".murray-lamp/status.json"
 PREVIEW_SECONDS = 8.0
+DISCONNECT_ALERT_SECONDS = 5 * 60
 
 
 def build_color_cmd(r: int, g: int, b: int) -> str:
@@ -180,8 +187,15 @@ def merge_config(raw) -> dict:
         cfg["auto_off"]["idle_minutes"] = int(auto["idle_minutes"])
     night = auto.get("night") or {}
     if _valid_hhmm(night.get("from")) and _valid_hhmm(night.get("to")):
-        cfg["auto_off"]["night"] = {"enabled": bool(night.get("enabled")),
-                                    "from": night["from"], "to": night["to"]}
+        nb = night.get("brightness")
+        cfg["auto_off"]["night"] = {
+            "enabled": bool(night.get("enabled")), "from": night["from"], "to": night["to"],
+            "off": bool(night.get("off", True)),
+            "brightness": max(1, min(120, int(nb))) if isinstance(nb, (int, float)) else None,
+        }
+    for agent, effect in (raw.get("agents") or {}).items():
+        if agent in cfg["agents"]:
+            cfg["agents"][agent] = effect if _valid_effect(effect) else None
     if isinstance(raw.get("presets"), list):
         cfg["presets"] = [
             {"name": str(p["name"])[:40], "effect": p["effect"]}
@@ -229,12 +243,15 @@ def commands_for_state(
     *,
     brightness: Optional[int] = None,
     config: Optional[dict] = None,
+    agent: Optional[str] = None,
 ) -> list[str]:
     """UTF-8 NUS commands to apply for a state (empty if noop/unknown)."""
     if color_for_state(state) is None:
         return []
     cfg = config or DEFAULT_CONFIG
     effect = cfg.get("manual") or cfg["states"][state]
+    if state == "thinking" and not cfg.get("manual") and agent:
+        effect = cfg.get("agents", {}).get(agent) or effect
     if brightness is None:
         brightness = cfg.get("brightness", DEFAULT_BRIGHTNESS)
     return effect_commands(effect, brightness=brightness)
@@ -302,6 +319,16 @@ class LampPlanner:
     def reset(self) -> None:
         self._last = None  # force re-apply (e.g. after reconnect)
 
+    def _in_night(self) -> bool:
+        night = self.config["auto_off"].get("night") or {}
+        return bool(night.get("enabled")) and in_night_window(night["from"], night["to"], self.minute_of_day())
+
+    def _brightness(self) -> int:
+        night = self.config["auto_off"].get("night") or {}
+        if self._in_night() and night.get("brightness"):
+            return int(night["brightness"])
+        return int(self.config["brightness"])
+
     def _should_be_off(self, state: str, now: float) -> bool:
         if state != "idle" or self.config.get("manual"):
             self._idle_since = None
@@ -313,7 +340,7 @@ class LampPlanner:
         if minutes and now - self._idle_since >= minutes * 60:
             return True
         night = auto.get("night") or {}
-        return bool(night.get("enabled")) and in_night_window(night["from"], night["to"], self.minute_of_day())
+        return self._in_night() and bool(night.get("off", True))
 
     def _refresh_config(self) -> None:
         try:
@@ -341,12 +368,12 @@ class LampPlanner:
         effect = raw.get("effect")
         return effect if _valid_effect(effect) else None
 
-    def plan(self, state: str, now: float) -> Optional[list[str]]:
+    def plan(self, state: str, now: float, agent: Optional[str] = None) -> Optional[list[str]]:
         self._refresh_config()
         preview = self._new_preview()
         if preview is not None:
             self._preview_until = now + PREVIEW_SECONDS
-            cmds = effect_commands(preview, brightness=self.config["brightness"])
+            cmds = effect_commands(preview, brightness=self._brightness())
             self._last = tuple(cmds)
             return cmds
         if now < self._preview_until:
@@ -354,11 +381,65 @@ class LampPlanner:
         if self._should_be_off(state, now):
             cmds = ["LEDOFF"]
         else:
-            cmds = commands_for_state(state, config=self.config)
+            cmds = commands_for_state(state, config=self.config, agent=agent,
+                                      brightness=self._brightness())
         if not cmds or tuple(cmds) == self._last:
             return None
         self._last = tuple(cmds)
         return cmds
+
+
+class LampStatus:
+    """Writes ~/.murray-lamp/status.json for the panel and alerts on long disconnects."""
+
+    def __init__(self, path: Path = STATUS_PATH, alert_after: float = DISCONNECT_ALERT_SECONDS,
+                 notify=None):
+        self.path = Path(path)
+        self.alert_after = alert_after
+        self.notify = notify or _macos_notify
+        self.connected = False
+        self.since = time.time()
+        self._alerted = False
+        self._last_written: Optional[tuple] = None
+        self._last_write_time = 0.0
+
+    def set_connected(self, connected: bool) -> None:
+        if connected != self.connected:
+            self.connected = connected
+            self.since = time.time()
+            if connected:
+                self._alerted = False
+
+    def update(self, state: str, agent: Optional[str], error: Optional[str] = None) -> None:
+        import json
+
+        now = time.time()
+        if not self.connected and not self._alerted and now - self.since >= self.alert_after:
+            self._alerted = True
+            self.notify("Murray Lamp", f"Lámpara desconectada desde hace {int((now - self.since) // 60)} min")
+        snap = (self.connected, state, agent, error)
+        if snap == self._last_written and now - self._last_write_time < 30:
+            return
+        self._last_written, self._last_write_time = snap, now
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(json.dumps({
+                "connected": self.connected, "since": self.since, "state": state,
+                "agent": agent, "error": error, "ts": now,
+            }))
+        except OSError:
+            pass
+
+
+def _macos_notify(title: str, text: str) -> None:
+    import subprocess
+
+    try:
+        subprocess.run(["osascript", "-e",
+                        f'display notification "{text}" with title "{title}"'],
+                       timeout=5, capture_output=True)
+    except Exception as exc:  # never let a notification kill the daemon
+        log.warning("notification failed: %s", exc)
 
 
 async def drive_lamp(
@@ -367,6 +448,7 @@ async def drive_lamp(
     dry_run: bool = False,
     poll_interval: float = 0.5,
     planner: Optional[LampPlanner] = None,
+    status: Optional[LampStatus] = None,
 ):
     """asyncio task: watch StateMachine and drive Moonside on transitions.
 
@@ -375,12 +457,14 @@ async def drive_lamp(
     """
     backoff = 5.0
     planner = planner or LampPlanner()
+    status = status or LampStatus()
 
     if dry_run:
         log.info("Lamp dry-run: logging commands, no BLE")
         while True:
             try:
-                cmds = planner.plan(machine.current(time.monotonic()), time.monotonic())
+                cmds = planner.plan(machine.current(time.monotonic()), time.monotonic(),
+                                    agent=getattr(machine, "agent", None))
                 machine.timing = planner.config["timing"]
                 if cmds:
                     log.info("lamp dry-run cmds=%s", cmds)
@@ -404,20 +488,27 @@ async def drive_lamp(
                 log.info("Lamp connected (%s)", device.name or device.address)
                 backoff = 5.0
                 planner.reset()
+                status.set_connected(True)
                 while True:
                     if not client.is_connected:
                         raise RuntimeError("Lamp disconnected")
                     now = time.monotonic()
-                    cmds = planner.plan(machine.current(now), now)
+                    state = machine.current(now)
+                    agent = getattr(machine, "agent", None)
+                    cmds = planner.plan(state, now, agent=agent)
                     machine.timing = planner.config["timing"]
                     if cmds:
                         await send_commands(client, cmds)
+                    status.update(state, agent)
                     await asyncio.sleep(poll_interval)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             log.warning("Lamp BLE unavailable (%s: %s); retrying in %.0fs",
                         type(exc).__name__, exc, backoff)
+            status.set_connected(False)
+            status.update(machine.current(time.monotonic()), getattr(machine, "agent", None),
+                          error=f"{type(exc).__name__}: {exc}"[:200])
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60.0)
 

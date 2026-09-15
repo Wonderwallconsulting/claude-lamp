@@ -12,7 +12,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from lamp import (CONFIG_PATH, DEFAULT_CONFIG, PREVIEW_PATH, PREVIEW_SECONDS,
+from lamp import (CONFIG_PATH, DEFAULT_CONFIG, PREVIEW_PATH, PREVIEW_SECONDS, STATUS_PATH,
                   THEME_CATALOG, _valid_effect, load_config, merge_config, save_config)
 
 HTML_PATH = Path(__file__).with_name("panel.html")
@@ -24,6 +24,8 @@ STATE_LABELS = {
     "idle": "Reposo", "thinking": "Pensando", "speaking": "Hablando",
     "happy": "Contento", "error": "Error", "notify": "Esperándote",
 }
+AGENT_LABELS = {"claude": "Claude Code", "cursor": "Cursor", "codex": "Codex CLI",
+                "chatgpt": "ChatGPT.app", "hermes": "Hermes"}
 TIMING_LABELS = {
     "speaking": "Hablando", "happy": "Contento", "error": "Error",
     "notify": "Esperándote", "thinking": "Pensando (sin actividad)",
@@ -82,10 +84,15 @@ class Handler(BaseHTTPRequestHandler):
                 "catalog": THEME_CATALOG,
                 "labels": STATE_LABELS,
                 "timing_labels": TIMING_LABELS,
+                "agent_labels": AGENT_LABELS,
                 "preview_seconds": PREVIEW_SECONDS,
             })
         elif self.path == "/api/status":
-            self._json(200, {"log": recent_log()})
+            try:
+                status = json.loads(STATUS_PATH.read_text())
+            except (OSError, ValueError):
+                status = None
+            self._json(200, {"log": recent_log(), "status": status, "now": time.time()})
         else:
             self._json(404, {"error": "not found"})
 

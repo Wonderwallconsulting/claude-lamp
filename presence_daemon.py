@@ -110,11 +110,17 @@ CLAUDE_HOOK_EVENTS = {
 
 
 def parse_claude_event_line(line: str):
-    """Map one claude-events.log line to an event name, or None."""
+    """Map one claude-events.log line ("<epoch> <Event> [agent]") to an event name, or None."""
     parts = line.split()
-    if len(parts) != 2:
+    if len(parts) not in (2, 3):
         return None
     return CLAUDE_HOOK_EVENTS.get(parts[1])
+
+
+def agent_of_event_line(line: str) -> str:
+    """Agent name from a claude-events.log line; legacy two-field lines are Claude Code."""
+    parts = line.split()
+    return parts[2] if len(parts) == 3 else "claude"
 
 
 # ---------------------------------------------------------------------------
@@ -145,11 +151,14 @@ class StateMachine:
 
     expires: dict = field(default_factory=dict)  # state -> monotonic expiry
     timing: dict = field(default_factory=lambda: dict(DEFAULT_TIMING))
+    agent: str | None = None  # source of the most recent event (claude, cursor, codex, chatgpt, hermes)
 
     def _t(self, key: str) -> float:
         return float(self.timing.get(key, DEFAULT_TIMING[key]))
 
-    def feed(self, event: str, now: float) -> None:
+    def feed(self, event: str, now: float, agent: str | None = None) -> None:
+        if agent:
+            self.agent = agent
         if event == "thinking":
             self.expires["thinking"] = now + self._t("thinking")
         elif event == "speaking":
@@ -275,11 +284,12 @@ async def observe(machine: StateMachine, transitions, from_start=False,
     """
     agent_logs = agent_log if isinstance(agent_log, (list, tuple)) else [agent_log]
     gateway_logs = gateway_log if isinstance(gateway_log, (list, tuple)) else [gateway_log]
-    tails = [(LogTail(p, from_start), parse_agent_line) for p in agent_logs]
-    tails += [(LogTail(p, from_start), parse_gateway_error_line) for p in gateway_logs]
-    tails.append((LogTail(claude_log, from_start), parse_claude_event_line))
+    hermes = lambda line: "hermes"
+    tails = [(LogTail(p, from_start), parse_agent_line, hermes) for p in agent_logs]
+    tails += [(LogTail(p, from_start), parse_gateway_error_line, hermes) for p in gateway_logs]
+    tails.append((LogTail(claude_log, from_start), parse_claude_event_line, agent_of_event_line))
     if chatgpt_glob:
-        tails.append((GlobTail(chatgpt_glob), parse_chatgpt_line))
+        tails.append((GlobTail(chatgpt_glob), parse_chatgpt_line, lambda line: "chatgpt"))
     last_state = None
     deadline = time.monotonic() + stop_after if stop_after else math.inf
 
@@ -293,7 +303,7 @@ async def observe(machine: StateMachine, transitions, from_start=False,
         dated = []
         undated = []
         last_wall = None
-        for tail, parse in tails:
+        for tail, parse, _agent in tails:
             for line in tail.poll():
                 event = parse(line)
                 if not event:
@@ -328,12 +338,12 @@ async def observe(machine: StateMachine, transitions, from_start=False,
 
     while time.monotonic() < deadline:
         now = time.monotonic()
-        for tail, parse in tails:
+        for tail, parse, agent_of in tails:
             for line in tail.poll():
                 event = parse(line)
                 if event:
-                    machine.feed(event, now)
-                    emit(machine.current(now), line.strip())
+                    machine.feed(event, now, agent=agent_of(line))
+                    emit(machine.current(now), f"[{machine.agent}] {line.strip()}")
         emit(machine.current(time.monotonic()), "(timer expiry)")
         await asyncio.sleep(poll_interval)
 

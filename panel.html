@@ -31,10 +31,12 @@
   .status { font:12px/1.5 ui-monospace, Menlo, monospace; color:var(--muted); white-space:pre-wrap; margin-top:12px; }
   .badge { font-size:12px; padding:2px 8px; border-radius:999px; background:var(--line); color:var(--muted); }
   .badge.on { background:#ffe08a; color:#5a4200; }
+  .badge.ok { background:#c9f3d3; color:#0a4d1e; }
+  .badge.bad { background:#f8c9c9; color:#6b0000; }
 </style>
 </head>
 <body>
-<h1>Murray Lamp</h1>
+<h1>Murray Lamp <span class="badge" id="conn">…</span></h1>
 <p class="sub">Efecto y colores de la Moonside para cada estado. <b>Probar</b> lo enseña unos segundos; <b>Guardar</b> lo deja fijo.</p>
 
 <div class="grid" id="states"></div>
@@ -66,10 +68,20 @@
     <label class="small">Apagar tras <span id="idleMinVal"></span> min en reposo (0 = nunca)</label>
     <input type="range" id="idleMin" min="0" max="180" step="5">
     <div class="row">
-      <label><input type="checkbox" id="nightOn"> Modo noche: apagar en reposo entre</label>
+      <label><input type="checkbox" id="nightOn"> Modo noche entre</label>
       <input type="time" id="nightFrom"> <span>y</span> <input type="time" id="nightTo">
     </div>
+    <div class="row">
+      <label><input type="checkbox" id="nightOff"> apagar en reposo</label>
+      <label><input type="checkbox" id="nightDim"> bajar brillo a</label>
+      <input type="number" id="nightBri" min="1" max="120" style="width:70px"> <span class="small">(todos los estados)</span>
+    </div>
     <p class="sub" style="margin:8px 0 0;font-size:13px">La actividad (pensando, error…) sigue encendiendo la lámpara; solo el reposo se apaga.</p>
+  </div>
+  <div class="card">
+    <h2>Quién trabaja (pensando)</h2>
+    <p class="sub" style="margin:0 0 8px;font-size:13px">Efecto de "pensando" por agente; sin marcar usa el general.</p>
+    <div id="agents"></div>
   </div>
 </div>
 
@@ -182,8 +194,29 @@ function buildTiming() {
   }
 }
 
+function buildAgents() {
+  const box = document.getElementById('agents'); box.innerHTML = '';
+  for (const key of Object.keys(DATA.defaults.agents)) {
+    const wrap = document.createElement('div'); wrap.style.marginBottom = '10px';
+    const head = document.createElement('label'); head.className = 'row';
+    const chk = document.createElement('input'); chk.type = 'checkbox'; chk.checked = !!CFG.agents[key];
+    head.append(chk, document.createTextNode(' ' + (DATA.agent_labels[key] || key)));
+    const ed = document.createElement('div'); ed.hidden = !chk.checked;
+    const draft = CFG.agents[key] || JSON.parse(JSON.stringify(DATA.defaults.states.thinking));
+    ed.append(effectEditor(draft, () => { if (chk.checked) CFG.agents[key] = draft; }));
+    const test = document.createElement('button'); test.textContent = 'Probar'; test.style.marginTop = '4px';
+    test.onclick = async () => { const r = await api('/api/preview', { effect: cleanEffect(draft) }); flash(r.ok ? `Mostrando ${DATA.preview_seconds}s…` : r.error); };
+    ed.append(test);
+    chk.onchange = () => { ed.hidden = !chk.checked; CFG.agents[key] = chk.checked ? draft : null; };
+    wrap.append(head, ed); box.append(wrap);
+  }
+}
+
 function buildAutoOff() {
   const a = CFG.auto_off;
+  document.getElementById('nightOff').checked = a.night.off !== false;
+  document.getElementById('nightDim').checked = !!a.night.brightness;
+  document.getElementById('nightBri').value = a.night.brightness || 30;
   const idle = document.getElementById('idleMin'); idle.value = a.idle_minutes;
   document.getElementById('idleMinVal').textContent = idle.value;
   idle.oninput = () => document.getElementById('idleMinVal').textContent = idle.value;
@@ -218,8 +251,11 @@ function payload() {
     auto_off: { idle_minutes: +document.getElementById('idleMin').value,
                 night: { enabled: document.getElementById('nightOn').checked,
                          from: document.getElementById('nightFrom').value || '23:00',
-                         to: document.getElementById('nightTo').value || '08:00' } },
+                         to: document.getElementById('nightTo').value || '08:00',
+                         off: document.getElementById('nightOff').checked,
+                         brightness: document.getElementById('nightDim').checked ? +document.getElementById('nightBri').value : null } },
     presets: CFG.presets,
+    agents: Object.fromEntries(Object.entries(CFG.agents).map(([k, v]) => [k, v ? cleanEffect(v) : null])),
   };
 }
 
@@ -229,7 +265,7 @@ async function save(extra) {
   const wantedManual = body.manual, gotManual = r.config.manual;
   const draft = CFG._manualDraft;
   CFG = r.config; CFG._manualDraft = gotManual ? null : draft;
-  buildStates(); buildManual(); buildTiming(); buildAutoOff(); buildPresets();
+  buildStates(); buildManual(); buildTiming(); buildAutoOff(); buildPresets(); buildAgents();
   if (wantedManual && !gotManual) flash('El efecto manual no es válido', 4000);
   else flash(gotManual ? 'Guardado ✓ (manual activo)' : 'Guardado ✓');
 }
@@ -239,9 +275,9 @@ async function init() {
   const bri = document.getElementById('brightness'); bri.value = CFG.brightness;
   document.getElementById('briVal').textContent = bri.value;
   bri.oninput = () => document.getElementById('briVal').textContent = bri.value;
-  buildStates(); buildManual(); buildTiming(); buildAutoOff(); buildPresets();
+  buildStates(); buildManual(); buildTiming(); buildAutoOff(); buildPresets(); buildAgents();
   document.getElementById('save').onclick = () => save();
-  document.getElementById('reset').onclick = () => { if (confirm('¿Volver a los valores por defecto?')) { CFG = JSON.parse(JSON.stringify(DATA.defaults)); bri.value = CFG.brightness; document.getElementById('briVal').textContent = bri.value; buildStates(); buildManual(); buildTiming(); buildAutoOff(); buildPresets(); } };
+  document.getElementById('reset').onclick = () => { if (confirm('¿Volver a los valores por defecto?')) { CFG = JSON.parse(JSON.stringify(DATA.defaults)); bri.value = CFG.brightness; document.getElementById('briVal').textContent = bri.value; buildStates(); buildManual(); buildTiming(); buildAutoOff(); buildPresets(); buildAgents(); } };
   document.getElementById('manualOn').onclick = () => save({ manual: cleanEffect(CFG._manualDraft) });
   document.getElementById('manualOff').onclick = () => save({ manual: null });
   document.getElementById('manualTest').onclick = async () => { const r = await api('/api/preview', { effect: cleanEffect(CFG._manualDraft) }); flash(r.ok ? `Mostrando ${DATA.preview_seconds}s…` : r.error); };
@@ -256,7 +292,14 @@ async function init() {
     const sel = document.getElementById('presetSel'); const p = CFG.presets[+sel.value];
     if (p && confirm(`¿Borrar la escena "${p.name}"?`)) { CFG.presets.splice(+sel.value, 1); save(); }
   };
-  const tick = async () => { try { const s = await api('/api/status'); document.getElementById('status').textContent = s.log.join('\n'); } catch {} };
+  const tick = async () => { try {
+    const s = await api('/api/status');
+    document.getElementById('status').textContent = s.log.join('\n');
+    const c = document.getElementById('conn'); const st = s.status;
+    if (!st || s.now - st.ts > 120) { c.textContent = 'daemon parado'; c.className = 'badge bad'; }
+    else if (st.connected) { c.textContent = `conectada · ${st.state}` + (st.agent ? ` · ${DATA.agent_labels[st.agent] || st.agent}` : ''); c.className = 'badge ok'; }
+    else { c.textContent = `desconectada ${Math.round((s.now - st.since) / 60)} min` + (st.error ? ` · ${st.error}` : ''); c.className = 'badge bad'; }
+  } catch {} };
   tick(); setInterval(tick, 3000);
 }
 init();
