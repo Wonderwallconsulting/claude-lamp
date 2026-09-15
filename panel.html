@@ -86,9 +86,11 @@ function effectEditor(effect, onChange) {
     const n = need(sel.value || null);
     colors.innerHTML = '';
     const count = n > 0 ? n : (n === 0 || n === -1 ? 0 : 1);
+    effect.colors = effect.colors || [];
     for (let i = 0; i < count; i++) {
+      if (!effect.colors[i]) effect.colors[i] = PALETTE[i % PALETTE.length];  // defaults must be real
       const inp = document.createElement('input'); inp.type = 'color';
-      inp.value = hex(effect.colors[i] || PALETTE[i % PALETTE.length]);
+      inp.value = hex(effect.colors[i]);
       inp.oninput = () => { effect.colors[i] = rgb(inp.value); onChange(); };
       colors.appendChild(inp);
     }
@@ -153,8 +155,11 @@ function payload() {
 async function save(extra) {
   const body = Object.assign(payload(), extra || {});
   const r = await api('/api/config', body);
+  const wantedManual = body.manual, gotManual = r.config.manual;
   CFG = r.config; CFG._manualDraft = null;
-  buildStates(); buildManual(); flash('Guardado ✓');
+  buildStates(); buildManual();
+  if (wantedManual && !gotManual) flash('El efecto manual no es válido', 4000);
+  else flash(gotManual ? 'Guardado ✓ (manual activo)' : 'Guardado ✓');
 }
 
 async function init() {
