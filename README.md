@@ -105,7 +105,13 @@ tails that file like the Hermes logs (see `CLAUDE_HOOK_EVENTS`). Cursor uses
 `postToolUse`, `afterFileEdit`, `afterShellExecution`, `afterAgentResponse`,
 `stop`, `postToolUseFailure`) — never permission hooks, so the lamp can never
 block the agent. Hermes: every profile under `~/.hermes/profiles/*/logs` is
-tailed too (`hermes_log_paths`).
+tailed too (`hermes_log_paths`). Codex CLI uses the same event names as Claude
+Code, so `~/.codex/hooks.json` gets the same `claude_hook.sh` entries
+(`[features] hooks = true` in `~/.codex/config.toml`). ChatGPT.app (desktop)
+has no hooks: its embedded Codex writes
+`~/Library/Logs/com.openai.codex/YYYY/MM/DD/codex-desktop-*.log`, tailed via
+`GlobTail` (`turn-start`/`item completed` ⇒ thinking, `show turn-complete` ⇒
+speaking).
 
 | Hook event | Lamp |
 |---|---|

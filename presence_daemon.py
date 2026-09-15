@@ -68,6 +68,21 @@ def parse_gateway_error_line(line: str):
     return None
 
 
+# ChatGPT.app (desktop) embeds Codex and logs turns here; files rotate per day/session.
+CHATGPT_LOG_GLOB = str(Path.home() / "Library/Logs/com.openai.codex/*/*/*/codex-desktop-*.log")
+RE_CHATGPT_THINKING = re.compile(r"Reasoning summary (?:turn-start|item completed|part added)")
+RE_CHATGPT_DONE = re.compile(r"show turn-complete")
+
+
+def parse_chatgpt_line(line: str):
+    """Map one ChatGPT.app codex-desktop log line to an event name, or None."""
+    if RE_CHATGPT_DONE.search(line):
+        return "speaking"
+    if RE_CHATGPT_THINKING.search(line):
+        return "thinking"
+    return None
+
+
 # Appended by claude_hook.sh from Claude Code hooks: "<epoch> <HookEventName>".
 CLAUDE_EVENTS_LOG = Path.home() / ".murray-lamp/claude-events.log"
 
@@ -202,6 +217,33 @@ class LogTail:
         return chunk[: end + 1].decode("utf-8", errors="replace").splitlines()
 
 
+class GlobTail:
+    """Tail every file matching a glob; files that appear later are read from the start."""
+
+    def __init__(self, pattern: str, rescan_every: float = 10.0):
+        self.pattern = pattern
+        self.rescan_every = rescan_every
+        self._tails: dict[str, LogTail] = {}
+        self._last_scan = -math.inf
+        self._rescan(initial=True)
+
+    def _rescan(self, initial: bool = False) -> None:
+        import glob
+
+        self._last_scan = time.monotonic()
+        for path in glob.glob(self.pattern):
+            if path not in self._tails:
+                self._tails[path] = LogTail(Path(path), from_start=not initial)
+
+    def poll(self) -> list[str]:
+        if time.monotonic() - self._last_scan >= self.rescan_every:
+            self._rescan()
+        lines: list[str] = []
+        for tail in self._tails.values():
+            lines.extend(tail.poll())
+        return lines
+
+
 # ---------------------------------------------------------------------------
 # Observer task: logs -> state machine
 # ---------------------------------------------------------------------------
@@ -222,7 +264,7 @@ def _parse_log_ts(line: str):
 
 async def observe(machine: StateMachine, transitions, from_start=False,
                   agent_log=AGENT_LOG, gateway_log=GATEWAY_ERROR_LOG,
-                  claude_log=CLAUDE_EVENTS_LOG,
+                  claude_log=CLAUDE_EVENTS_LOG, chatgpt_glob=CHATGPT_LOG_GLOB,
                   poll_interval=1.0, stop_after=None):
     """Tail logs, feed the machine, and report state transitions.
 
@@ -236,6 +278,8 @@ async def observe(machine: StateMachine, transitions, from_start=False,
     tails = [(LogTail(p, from_start), parse_agent_line) for p in agent_logs]
     tails += [(LogTail(p, from_start), parse_gateway_error_line) for p in gateway_logs]
     tails.append((LogTail(claude_log, from_start), parse_claude_event_line))
+    if chatgpt_glob:
+        tails.append((GlobTail(chatgpt_glob), parse_chatgpt_line))
     last_state = None
     deadline = time.monotonic() + stop_after if stop_after else math.inf
 

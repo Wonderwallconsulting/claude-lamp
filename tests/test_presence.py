@@ -555,3 +555,42 @@ class TestPanel(unittest.TestCase):
                     call("/api/preview", {"effect": {"theme": "WAVE1", "colors": [[1,2,3]]}})
             finally:
                 srv.shutdown()
+
+
+class TestChatGPTDesktop(unittest.TestCase):
+    TURN_START = ("2026-09-15T20:35:06.703Z info [electron-message-handler] Reasoning summary turn-start "
+                  "config resolved conversationId=01a0a13a-3a94-7142-989f-db1de6d3cbdf reasoningSummaryOverride=detailed")
+    ITEM = ("2026-09-15T20:35:26.276Z info [electron-message-handler] Reasoning summary item completed "
+            "itemId=rs_08a526ae5de3207c016aa9ac0c0fb887d2b428cdd0067e0473 rendererWebContentsId=1")
+    DONE = ("2026-09-15T20:36:01.100Z info [electron-message-handler] [desktop-notifications] show turn-complete "
+            "conversationId=01a0a13a rendererWebContentsId=1")
+    NOISE = ("2026-09-15T20:34:34.769Z error [electron-message-handler] [desktop-notifications][global-error] "
+             "ResizeObserver loop completed with undelivered notifications.")
+
+    def test_parse_chatgpt_lines(self):
+        from presence_daemon import parse_chatgpt_line
+        self.assertEqual(parse_chatgpt_line(self.TURN_START), "thinking")
+        self.assertEqual(parse_chatgpt_line(self.ITEM), "thinking")
+        self.assertEqual(parse_chatgpt_line(self.DONE), "speaking")
+        self.assertIsNone(parse_chatgpt_line(self.NOISE))
+
+    def test_glob_tail_discovers_new_files(self):
+        import tempfile
+        from presence_daemon import GlobTail
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "2026/09/15").mkdir(parents=True)
+            old = root / "2026/09/15/codex-desktop-a.log"
+            old.write_text("existing\n")
+            gt = GlobTail(str(root / "*/*/*/codex-desktop-*.log"), rescan_every=0)
+            self.assertEqual(gt.poll(), [])           # existing content is not replayed
+            with open(old, "a") as fh:
+                fh.write("new1\n")
+            self.assertEqual(gt.poll(), ["new1"])
+            (root / "2026/09/16").mkdir()
+            new = root / "2026/09/16/codex-desktop-b.log"
+            new.write_text("day2 first\n")           # a file created after start
+            self.assertEqual(gt.poll(), ["day2 first"])  # ...is read from its beginning
+            with open(new, "a") as fh:
+                fh.write("day2 second\n")
+            self.assertEqual(gt.poll(), ["day2 second"])
