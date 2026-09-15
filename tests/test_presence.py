@@ -242,11 +242,25 @@ class TestLamp(unittest.TestCase):
         self.assertEqual(STATE_RGB, expected)
         for state, rgb in expected.items():
             self.assertEqual(color_for_state(state), rgb)
+            self.assertEqual(build_color_cmd(*rgb), f"COLOR{rgb[0]:03d}{rgb[1]:03d}{rgb[2]:03d}")
+
+    def test_state_to_theme_commands(self):
+        from lamp import STATE_THEME, commands_for_state
+        for state in ("idle", "thinking", "happy", "speaking", "error", "notify"):
             cmds = commands_for_state(state, brightness=80)
-            self.assertEqual(cmds[0], "LEDON")
-            self.assertEqual(cmds[1], build_color_cmd(*rgb))
-            self.assertEqual(cmds[2], "BRIGH080")
-            self.assertEqual(cmds[1], f"COLOR{rgb[0]:03d}{rgb[1]:03d}{rgb[2]:03d}")
+            self.assertEqual(cmds, ["LEDON", "BRIGH080", STATE_THEME[state]], state)
+        self.assertEqual(STATE_THEME["speaking"], "THEME.WAVE1.40,220,80,255,255,255,")
+        self.assertEqual(STATE_THEME["notify"], "THEME.WAVE1.200,0,255,255,255,255,")
+
+    def test_theme_param_counts_match_official_docs(self):
+        # developer.moonside.design: BEAT1/BEAT3 take 3 RGB, WAVE1/PULSING1/TWINKLE1 take 2.
+        from lamp import STATE_THEME
+        expected_colors = {"BEAT1": 3, "BEAT3": 3, "WAVE1": 2, "PULSING1": 2, "TWINKLE1": 2}
+        for state, cmd in STATE_THEME.items():
+            self.assertTrue(cmd.startswith("THEME.") and cmd.endswith(","), cmd)
+            name, params = cmd[len("THEME."):].split(".", 1)
+            values = [v for v in params.split(",") if v]
+            self.assertEqual(len(values), 3 * expected_colors[name], f"{state}: {cmd}")
 
     def test_blink_wink_do_not_change_lamp(self):
         from lamp import color_for_state, commands_for_state

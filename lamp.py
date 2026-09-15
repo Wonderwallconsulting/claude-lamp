@@ -4,7 +4,9 @@ Separate BleakClient from the iDotMatrix panel driver. Discover by name
 prefix MOONSIDE (macOS CoreBluetooth UUIDs change; never hardcode address).
 Optional env MOONSIDE_MAC pins address/UUID when set.
 
-Solid COLOR commands only — THEME.* are unreliable on this Halo.
+THEME.* commands must follow https://developer.moonside.design/ exactly (name and
+number of RGB triplets, trailing comma): a malformed theme hangs the firmware until
+power-cycled. That is what earlier "THEME.* unreliable" notes were seeing.
 Brightness command is BRIGH080 (NOT BRIGHTNESS080): firmware parses substring(5).toInt(),
 so BRIGHTNESS100 becomes brightness 0 and the lamp stays dark until reboot.
 """
@@ -23,7 +25,8 @@ NUS_TX_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 NAME_PREFIX = "MOONSIDE"
 DEFAULT_BRIGHTNESS = 100
 
-# Solid RGB per presence state (blink/wink are face overlays — no lamp change).
+# Base RGB per presence state; fallback when a state has no STATE_THEME entry
+# (blink/wink are face overlays — no lamp change).
 STATE_RGB: dict[str, tuple[int, int, int]] = {
     "idle": (255, 180, 50),       # sunset mango (historical)
     "thinking": (0, 220, 255),    # cyan
@@ -35,6 +38,20 @@ STATE_RGB: dict[str, tuple[int, int, int]] = {
 
 # Face-only overlays; lamp keeps the parent state color.
 LAMP_NOOP_STATES = frozenset({"blink", "wink"})
+
+_CYAN, _NAVY, _WHITE, _BLACK = "0,220,255", "0,0,140", "255,255,255", "0,0,0"
+_GREEN, _PURPLE, _RED, _MANGO, _AMBER = "40,220,80", "200,0,255", "255,40,40", "255,180,50", "120,60,0"
+
+# Animated theme per state (official parameter counts: BEAT1/BEAT3 = 3 RGB,
+# WAVE1/PULSING1/TWINKLE1 = 2 RGB).
+STATE_THEME: dict[str, str] = {
+    "idle": f"THEME.PULSING1.{_MANGO},{_AMBER},",
+    "thinking": f"THEME.BEAT1.{_CYAN},{_NAVY},{_WHITE},",
+    "happy": f"THEME.TWINKLE1.{_WHITE},{_GREEN},",
+    "speaking": f"THEME.WAVE1.{_GREEN},{_WHITE},",
+    "error": f"THEME.BEAT3.{_RED},{_BLACK},{_WHITE},",
+    "notify": f"THEME.WAVE1.{_PURPLE},{_WHITE},",
+}
 
 
 def build_color_cmd(r: int, g: int, b: int) -> str:
@@ -62,9 +79,11 @@ def commands_for_state(
     rgb = color_for_state(state)
     if rgb is None:
         return []
-    cmds = ["LEDON", build_color_cmd(*rgb)]
+    cmds = ["LEDON"]
+    # BRIGH re-applies the saved mode, so it goes before the theme to avoid a restart.
     if brightness is not None:
         cmds.append(build_brightness_cmd(brightness))
+    cmds.append(STATE_THEME.get(state) or build_color_cmd(*rgb))
     return cmds
 
 

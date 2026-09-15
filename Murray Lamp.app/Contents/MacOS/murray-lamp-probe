@@ -1,0 +1,3 @@
+#!/bin/zsh
+cd /Users/joss/projects/murray-led-presence
+exec ./.venv/bin/python lamp_probe.py "$@"

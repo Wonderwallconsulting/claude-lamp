@@ -14,10 +14,19 @@ Hermes logs **read-only** to infer state:
 Priority: error > speaking > happy > thinking > notify > idle. BLE reconnects
 with backoff (5 s → 60 s); the daemon never crashes when the panel is off.
 
-Also drives a **Moonside Halo** lamp (`MOONSIDE-*`, Nordic UART) with solid
-colors matching presence state (mango idle, cyan thinking, green happy, warm
-white speaking, red error, purple notify). Separate BLE client from the panel;
-`--no-lamp` / `--lamp-only` / env `MOONSIDE_MAC`. Discover by name, never pin UUID.
+Also drives a **Moonside Halo** lamp (`MOONSIDE-*`, Nordic UART) with animated
+themes per presence state (`lamp.STATE_THEME`): PULSING1 mango idle, BEAT1 cyan
+thinking, WAVE1 green speaking, TWINKLE1 green happy, BEAT3 red error, WAVE1
+purple notify. Separate BLE client from the panel; `--no-lamp` / `--lamp-only` /
+env `MOONSIDE_MAC`. Discover by name, never pin UUID.
+
+**THEME protocol:** follow the official reference
+(https://developer.moonside.design/) exactly — `THEME.<NAME>.<r,g,b,...>,` with
+the documented number of RGB triplets (BEAT1/BEAT3/LAVA1 = 3, WAVE1/PULSING1/
+TWINKLE1/GRADIENT1/COLORDROP1/THEME1-5 = 2, GRADIENT2 = 3, FIRE2 = 4, RAINBOW1/2
+take a speed, RAINBOW3/FIRE1 take `0`). An unknown name or wrong count hangs the
+firmware until power-cycled. `lamp_probe.py` cycles every official theme
+(run via launchd through `Murray Lamp.app`, daemon stopped).
 
 **Lamp BLE note:** `--once-demo` / `--lamp-only` leave the Halo on idle mango and
 never send `LEDOFF`. Closing the GATT connection may still dim or power off the
