@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key><string>es</string>
+  <key>CFBundleExecutable</key><string>murray-lamp</string>
+  <key>CFBundleIdentifier</key><string>com.wonderwallit.murray-lamp</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>Murray Lamp</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>LSBackgroundOnly</key><true/>
+  <key>NSBluetoothAlwaysUsageDescription</key>
+  <string>Controlar la lámpara Moonside Halo que refleja el estado de Murray.</string>
+</dict>
+</plist>

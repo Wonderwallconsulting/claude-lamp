@@ -1,0 +1,4 @@
+#!/bin/zsh
+exec "/Users/joss/projects/murray-led-presence/.venv/bin/python" \
+  "/Users/joss/projects/murray-led-presence/presence_daemon.py" \
+  --lamp-only "$@"

@@ -1,153 +1,107 @@
-# Claude Lamp
+# Murray LED Presence
 
-Control your [Moonside](https://moonside.design) LED lamp via BLE based on Claude Code's state. Your lamp becomes a physical status indicator — animated themes while Claude works, green when idle, purple when it needs your input.
+Live physical avatar for Murray/Hermes on an iDotMatrix 32x32 BLE LED panel
+(`IDM-29BA80`, macOS UUID `1D6E439A-F83F-C1AE-B31B-6F09BBC97163`).
 
-> **WARNING** Author takes no responsibility for the hardware issues that may arise from using this script. You run these scripts at your own risk.
+A single daemon (`presence_daemon.py`) owns the BLE connection and tails
+Hermes logs **read-only** to infer state:
 
-**NOTE** The initial connection handshake with the lamp might take few seconds, please tail the daemon logs to check it all works fine.
+- `~/.hermes/logs/agent.log` — `conversation turn:` / `API call #` ⇒ thinking;
+  `response ready:` ⇒ speaking (4 s) then happy (2 s).
+- `~/.hermes/logs/gateway.error.log` — `ERROR` / `RateLimitError` / new
+  traceback ⇒ error (6 s).
 
-## Demo
+Priority: error > speaking > happy > thinking > notify > idle. BLE reconnects
+with backoff (5 s → 60 s); the daemon never crashes when the panel is off.
 
-| State | Lamp | Trigger |
-|---|---|---|
-| **Working** | BEAT2 theme (white/navy) | Prompt submit, tool use |
-| **Idle** | Solid sunset mango | Claude finishes responding, session start |
-| **Needs input** | Solid purple | Permission request, plan approval, question, notification |
-| **Off** | LED off | Session end |
+Also drives a **Moonside Halo** lamp (`MOONSIDE-*`, Nordic UART) with solid
+colors matching presence state (mango idle, cyan thinking, green happy, warm
+white speaking, red error, purple notify). Separate BLE client from the panel;
+`--no-lamp` / `--lamp-only` / env `MOONSIDE_MAC`. Discover by name, never pin UUID.
 
-## Requirements
+**Lamp BLE note:** `--once-demo` / `--lamp-only` leave the Halo on idle mango and
+never send `LEDOFF`. Closing the GATT connection may still dim or power off the
+lamp (firmware / BLE sleep). Historical `moonside_daemon` sent explicit `LEDOFF`
+on exit; this project does not. Keep the daemon running (`drive_lamp` holds the
+connection) if you need the lamp to stay lit. Demo default brightness is 100
+(range 0–120) so idle is visible in daylight.
 
-- macOS (BLE via CoreBluetooth)
-- Python 3.10+
-- [bleak](https://github.com/hbldh/bleak) (`pip install bleak`)
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-- A Moonside lamp (tested with Halo — should work with One, Aurora, Lighthouse etc.)
 
-## Setup
 
-### 1. Install bleak
+## Usage
 
-```sh
-pip install bleak
+```bash
+# One-time setup (Python >=3.12 required by pyidotmatrix; system python3 is 3.9)
+# e.g. uv python: ~/.local/share/uv/python/cpython-3.12-macos-aarch64-none/bin/python3.12
+python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt
+
+# Tests
+.venv/bin/python -m unittest discover -s tests -v
+
+# Preview frames without Bluetooth (PNG + GIF in preview/)
+.venv/bin/python avatar.py preview
+
+
+# Lamp-only dry demo (no panel BLE; logs COLOR commands)
+.venv/bin/python presence_daemon.py --once-demo --lamp-only --dry-run
+
+# Dry run: print state transitions from real Hermes logs, no BLE
+.venv/bin/python presence_daemon.py --dry-run --from-start --seconds 10
+
+# Physical demo (run from Terminal so macOS grants Bluetooth permission)
+.venv/bin/python presence_daemon.py --once-demo --device 1D6E439A-F83F-C1AE-B31B-6F09BBC97163
+
+# Install as a user service (launchd)
+cp com.wonderwallit.murray-led-presence.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.wonderwallit.murray-led-presence.plist
+# Logs: ~/Library/Logs/murray-led-presence.log
+
+# Lamp-only service (what is actually installed on the Mac Mini; the panel is
+# owned by LED Avatar.app). Runs through `Murray Lamp.app`, a bundle whose
+# Info.plist carries NSBluetoothAlwaysUsageDescription — a bare venv python
+# is killed by TCC (SIGABRT, exit 134) before it can even ask for permission.
+cp com.wonderwallit.murray-lamp.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.wonderwallit.murray-lamp.plist
+# Logs: ~/Library/Logs/murray-lamp.log
 ```
 
-### 2. Copy scripts
+## Claude Code integration
 
-```sh
-mkdir -p ~/.claude/moonside_hooks
-cp claude_hooks/moonside_hook.sh claude_hooks/moonside_daemon.py ~/.claude/moonside_hooks/
-chmod +x ~/.claude/moonside_hooks/moonside_hook.sh
-```
+Claude Code hooks call `claude_hook.sh <HookEventName>`, which appends
+`<epoch> <HookEventName>` to `~/.murray-lamp/claude-events.log`. The daemon
+tails that file like the Hermes logs (see `CLAUDE_HOOK_EVENTS`):
 
-Putting them in `~/.claude/moonside_hooks/` means they work across all projects — no need to have `claude_hooks/` in every repo.
-
-### 3. Install the hooks
-
-Merge `claude_hooks/settings.json` into `~/.claude/settings.json`. The paths in the config use `$CLAUDE_PROJECT_DIR` — update them to point to `~/.claude/moonside_hooks/` instead:
-
-```sh
-sed 's|\$CLAUDE_PROJECT_DIR/claude_hooks|~/.claude/moonside_hooks|g' \
-  claude_hooks/settings.json
-```
-
-Or just copy the JSON and replace the paths manually. The config hooks into `SessionStart`, `UserPromptSubmit`, `Stop`, `PreToolUse` (all tools), `PostToolUse`, `PermissionRequest`, `Notification`, and `SessionEnd`.
-
-The daemon includes a debounce to prevent phantom working transitions (e.g. internal prompt suggestions firing PreToolUse shortly after Stop).
-
-### 4. Restart Claude Code
-
-Open a new Claude Code session. The daemon auto-discovers your lamp by name — no address configuration needed.
-
-> **Multiple lamps?** Set `MOONSIDE_MAC` to pin a specific device. Run `python3 moonside_ble.py scan` to list devices. On macOS, addresses are UUIDs (not MAC addresses).
-
-## Architecture
-
-```
-Claude Code hook event
-  → moonside_hook.sh (writes state to /tmp/moonside_state, launches daemon if needed)
-    → moonside_daemon.py (persistent BLE connection, reads state file every 200ms)
-      → Moonside lamp via BLE (Nordic UART Service)
-```
-
-The daemon keeps a persistent BLE connection to avoid 2-5s reconnect latency on every hook event. It runs in the background and auto-exits after 30 minutes of idle or on `SessionEnd`.
-
-### Files
-
-| File | Purpose |
+| Hook event | Lamp |
 |---|---|
-| `claude_hooks/moonside_hook.sh` | Shell hook called by Claude Code. Writes state, starts daemon if needed. Always exits 0. |
-| `claude_hooks/moonside_daemon.py` | Background daemon with persistent BLE connection, state machine, and idle→working debounce. |
-| `claude_hooks/settings.json` | Ready-to-use Claude Code hooks config. Copy/merge into `~/.claude/settings.json`. |
-| `moonside_ble.py` | Standalone BLE controller for Moonside lamps. Usable directly from the command line. |
+| `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `SubagentStart` | cyan (thinking) |
+| `Stop` | warm white (speaking) → green (happy) → mango |
+| `PostToolUseFailure` | red (error) |
+| `Notification`, `PermissionRequest` | purple (waiting for you; overrides thinking) |
 
-### Daemon lifecycle
+Register in `~/.claude/settings.json` one block per event, e.g.:
 
-- **PID file:** `/tmp/moonside_daemon.pid`
-- **State file:** `/tmp/moonside_state`
-- **Log file:** `/tmp/moonside_daemon.log`
-
-## Standalone BLE controller
-
-`moonside_ble.py` can be used independently of Claude Code:
-
-```sh
-python3 moonside_ble.py scan                     # find devices
-python3 moonside_ble.py on                        # turn on
-python3 moonside_ble.py off                       # turn off
-python3 moonside_ble.py color 255 0 128           # set color
-python3 moonside_ble.py color 255 0 128 --brightness 80
-python3 moonside_ble.py theme rainbow3            # activate theme
-python3 moonside_ble.py theme fire2 --colors 255,50,0
-python3 moonside_ble.py raw "THEME.GRADIENT1.255,0,0,0,0,255"
-python3 moonside_ble.py interactive               # REPL mode
+```json
+"Stop": [{"hooks": [{"type": "command",
+  "command": "/Users/joss/projects/murray-led-presence/claude_hook.sh Stop"}]}]
 ```
 
-## Troubleshooting
+The hook is a plain zsh script that always exits 0 and resets the file past
+1 MB (the tailer treats truncation as rotation).
 
-**Lamp not responding:**
-```sh
-# Check daemon log
-cat /tmp/moonside_daemon.log
+## Origin
 
-# Verify BLE connection works
-python3 moonside_ble.py on
-```
+This repository started as a fork of Bobby Bobak's MIT-licensed
+[claude-lamp](https://github.com/bobek-balinek/claude-lamp) (Moonside protocol,
+`COLOR`/`BRIGH` commands, purple-when-waiting idea). His original scripts and
+README are kept in `claude_hooks/` and `README.upstream.md`.
 
-**Daemon stuck:**
-```sh
-kill "$(cat /tmp/moonside_daemon.pid)"
-rm -f /tmp/moonside_daemon.pid /tmp/moonside_state
-```
+## Attribution & license notes
 
-**bleak not found:**
-The hook auto-detects python from `python3`, `/opt/homebrew/bin/python3`, and `$CONDA_PREFIX/bin/python3`. Make sure one of them has bleak installed.
-
-## Default colors
-
-| State | Visual |
-|---|---|
-| Working | BEAT2 theme (white + navy) |
-| Idle | Solid sunset mango (255, 180, 50) |
-| Input | Solid purple (200, 0, 255) |
-
-Colors are configured in `moonside_daemon.py`.
-
-## Protocol
-
-Moonside lamps use the Nordic UART Service (NUS) over BLE. Commands are ASCII text:
-
-| Command | Format | Example |
-|---|---|---|
-| LED on/off | `LEDON` / `LEDOFF` | `LEDOFF` |
-| Color (0-255) | `COLORRRRGGGBBB` | `COLOR000255000` |
-| Brightness (0-120) | `BRIGHBBB` | `BRIGH060` |
-| Theme | `THEME.NAME.R,G,B,...` | `THEME.FIRE2.255,50,0` |
-
-## License
-
-MIT
-
-## Acknowledgments
-
-- [HomeAssistant](https://community.home-assistant.io/t/integrating-moonside-t1-lighthouse/473578/8)
-- [TheGreyDiamond](https://thegreydiamond.de/blog/2022/10/10/reverse-engineering-moonside-lighthouse/)
+- `avatar.py` started from Jose's validated led-avatar project
+  (`~/Documents/Codex/2026-09-14/referenced-chatgpt-conversation-this-is-an/outputs/led-avatar/`).
+- `expressions.py` uses After Dark “Eyes” hollow square frames (CRT cyan/
+  yellow-green glow, block pupils, comic mouth); `EXPRESSIONS` API unchanged.
+- Depends on [pyidotmatrix](https://github.com/Madhat69/pyidotmatrix)
+  (pinned rev `da00f354`), which is licensed under **GPL-3.0**. This project
+  inherits that license obligation for distribution.
+- Also uses Bleak 3.0.2 and Pillow 12.3.0 (pinned in `requirements.txt`).

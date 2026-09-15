@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.wonderwallit.murray-led-presence</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/joss/projects/murray-led-presence/.venv/bin/python</string>
+    <string>/Users/joss/projects/murray-led-presence/presence_daemon.py</string>
+    <string>--device</string>
+    <string>1D6E439A-F83F-C1AE-B31B-6F09BBC97163</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/joss/projects/murray-led-presence</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>/Users/joss/Library/Logs/murray-led-presence.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/joss/Library/Logs/murray-led-presence.log</string>
+</dict>
+</plist>
