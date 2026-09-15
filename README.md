@@ -14,10 +14,10 @@ Hermes logs **read-only** to infer state:
 Priority: error > speaking > happy > thinking > notify > idle. BLE reconnects
 with backoff (5 s → 60 s); the daemon never crashes when the panel is off.
 
-Also drives a **Moonside Halo** lamp (`MOONSIDE-*`, Nordic UART) with animated
-themes per presence state (`lamp.STATE_THEME`): PULSING1 mango idle, BEAT1 cyan
-thinking, WAVE1 green speaking, TWINKLE1 green happy, BEAT3 red error, WAVE1
-purple notify. Separate BLE client from the panel; `--no-lamp` / `--lamp-only` /
+Also drives a **Moonside Halo** lamp (`MOONSIDE-*`, Nordic UART) with an effect
+per presence state (`lamp.DEFAULT_CONFIG`, editable from the web panel): solid
+green idle, BEAT1 cyan thinking, warm white speaking, TWINKLE1 green happy,
+BEAT3 red error, WAVE1 purple notify. Separate BLE client from the panel; `--no-lamp` / `--lamp-only` /
 env `MOONSIDE_MAC`. Discover by name, never pin UUID.
 
 **THEME protocol:** follow the official reference
@@ -72,6 +72,22 @@ launchctl load ~/Library/LaunchAgents/com.wonderwallit.murray-led-presence.plist
 cp com.wonderwallit.murray-lamp.plist ~/Library/LaunchAgents/
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.wonderwallit.murray-lamp.plist
 # Logs: ~/Library/Logs/murray-lamp.log
+```
+
+## Control panel (web)
+
+`panel.py` serves a small page (default `http://localhost:7778`, service
+`com.wonderwallit.murray-panel` binds `0.0.0.0` so the phone can open it too)
+to pick the effect and colours of every state, a global brightness, and a
+**manual** mode that holds one effect regardless of state. **Probar** shows an
+effect for 8 s via `~/.murray-lamp/preview.json`; **Guardar** writes
+`~/.murray-lamp/config.json`, which `lamp.LampPlanner` hot-reloads (mtime) —
+no restart. Effects are validated against `THEME_CATALOG` on both sides so a
+malformed theme can never reach the firmware.
+
+```bash
+cp com.wonderwallit.murray-panel.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.wonderwallit.murray-panel.plist
 ```
 
 ## Claude Code integration

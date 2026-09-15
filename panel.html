@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Murray Lamp</title>
+<style>
+  :root { color-scheme: light dark; --bg:#f6f6f4; --card:#fff; --fg:#1b1b1b; --muted:#6b6b6b; --line:#e2e2df; --accent:#28dc50; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141414; --card:#1f1f1f; --fg:#eee; --muted:#9a9a9a; --line:#333; } }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font:15px/1.4 -apple-system, system-ui, sans-serif; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 16px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; }
+  .card h2 { font-size:16px; margin:0 0 10px; display:flex; align-items:center; gap:8px; }
+  .dot { width:14px; height:14px; border-radius:50%; border:1px solid rgba(0,0,0,.15); background:linear-gradient(90deg, var(--c1,#888), var(--c2,var(--c1,#888))); }
+  select, input[type=range] { width:100%; }
+  select { padding:8px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--fg); font-size:15px; }
+  .colors { display:flex; gap:8px; margin:10px 0; flex-wrap:wrap; }
+  .colors input { width:52px; height:40px; border:1px solid var(--line); border-radius:8px; background:none; padding:2px; }
+  .row { display:flex; gap:8px; align-items:center; margin-top:8px; flex-wrap:wrap; }
+  button { padding:9px 14px; border-radius:9px; border:1px solid var(--line); background:var(--card); color:var(--fg); font-size:15px; cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#062; font-weight:600; }
+  button.danger { border-color:#c33; color:#c33; }
+  .toolbar { position:sticky; bottom:0; margin-top:16px; padding:12px; background:var(--card); border:1px solid var(--line); border-radius:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .toolbar .grow { flex:1; min-width:180px; }
+  .speed { display:none; }
+  .speed.on { display:block; }
+  label.small { font-size:13px; color:var(--muted); }
+  .status { font:12px/1.5 ui-monospace, Menlo, monospace; color:var(--muted); white-space:pre-wrap; margin-top:12px; }
+  .badge { font-size:12px; padding:2px 8px; border-radius:999px; background:var(--line); color:var(--muted); }
+  .badge.on { background:#ffe08a; color:#5a4200; }
+</style>
+</head>
+<body>
+<h1>Murray Lamp</h1>
+<p class="sub">Efecto y colores de la Moonside para cada estado. <b>Probar</b> lo enseña unos segundos; <b>Guardar</b> lo deja fijo.</p>
+
+<div class="grid" id="states"></div>
+
+<div class="card" style="margin-top:12px" id="manualCard">
+  <h2>Manual <span class="badge" id="manualBadge">automático</span></h2>
+  <p class="sub" style="margin:0 0 8px">Deja la lámpara en un efecto fijo, ignorando los estados. Como la app del móvil.</p>
+  <div id="manualEditor"></div>
+  <div class="row">
+    <button id="manualOn" class="primary">Activar manual</button>
+    <button id="manualOff">Volver a automático</button>
+  </div>
+</div>
+
+<div class="toolbar">
+  <div class="grow">
+    <label class="small">Brillo global: <span id="briVal"></span></label>
+    <input type="range" id="brightness" min="5" max="120" step="5">
+  </div>
+  <button id="reset">Valores por defecto</button>
+  <button id="save" class="primary">Guardar</button>
+  <span id="msg" class="badge"></span>
+</div>
+
+<div class="status" id="status"></div>
+
+<script>
+let DATA = null;   // {config, defaults, catalog, labels}
+let CFG = null;
+
+const hex = rgb => '#' + rgb.map(v => Math.max(0, Math.min(255, v|0)).toString(16).padStart(2, '0')).join('');
+const rgb = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16));
+const need = theme => theme ? DATA.catalog[theme] : 1;   // -1 speed, 0 none, n colours
+const PALETTE = [[40,220,80],[0,220,255],[255,255,255],[200,0,255],[255,40,40],[255,180,50]];
+
+function effectEditor(effect, onChange) {
+  const box = document.createElement('div');
+  const sel = document.createElement('select');
+  const opts = [['', 'Color fijo (sin animación)']].concat(Object.keys(DATA.catalog).map(k => [k, k]));
+  for (const [v, t] of opts) { const o = document.createElement('option'); o.value = v; o.textContent = t; sel.appendChild(o); }
+  sel.value = effect.theme || '';
+  const colors = document.createElement('div'); colors.className = 'colors';
+  const speedWrap = document.createElement('div'); speedWrap.className = 'speed';
+  speedWrap.innerHTML = '<label class="small">Velocidad: <span></span></label><input type="range" min="1" max="100">';
+  const speed = speedWrap.querySelector('input'); speed.value = effect.speed || 20;
+  speedWrap.querySelector('span').textContent = speed.value;
+
+  function render() {
+    const n = need(sel.value || null);
+    colors.innerHTML = '';
+    const count = n > 0 ? n : (n === 0 || n === -1 ? 0 : 1);
+    for (let i = 0; i < count; i++) {
+      const inp = document.createElement('input'); inp.type = 'color';
+      inp.value = hex(effect.colors[i] || PALETTE[i % PALETTE.length]);
+      inp.oninput = () => { effect.colors[i] = rgb(inp.value); onChange(); };
+      colors.appendChild(inp);
+    }
+    speedWrap.classList.toggle('on', n === -1);
+    onChange();
+  }
+  sel.onchange = () => { effect.theme = sel.value || null; render(); };
+  speed.oninput = () => { effect.speed = +speed.value; speedWrap.querySelector('span').textContent = speed.value; onChange(); };
+  box.append(sel, colors, speedWrap);
+  render();
+  return box;
+}
+
+function cleanEffect(e) {
+  const n = need(e.theme);
+  const out = { theme: e.theme || null, colors: (e.colors || []).slice(0, Math.max(1, n)) };
+  if (n === -1) out.speed = e.speed || 20;
+  return out;
+}
+
+async function api(path, body) {
+  const r = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+  return r.json();
+}
+
+function flash(text, ms = 2500) {
+  const m = document.getElementById('msg'); m.textContent = text;
+  clearTimeout(flash.t); flash.t = setTimeout(() => m.textContent = '', ms);
+}
+
+function buildStates() {
+  const grid = document.getElementById('states'); grid.innerHTML = '';
+  for (const state of Object.keys(DATA.defaults.states)) {
+    const eff = CFG.states[state];
+    const card = document.createElement('div'); card.className = 'card';
+    const h = document.createElement('h2');
+    const dot = document.createElement('span'); dot.className = 'dot';
+    h.append(dot, document.createTextNode(DATA.labels[state] || state));
+    const paint = () => { const c = eff.colors; dot.style.setProperty('--c1', hex(c[0] || [0,0,0])); dot.style.setProperty('--c2', hex(c[1] || c[0] || [0,0,0])); };
+    card.append(h, effectEditor(eff, paint));
+    const row = document.createElement('div'); row.className = 'row';
+    const test = document.createElement('button'); test.textContent = 'Probar';
+    test.onclick = async () => { const r = await api('/api/preview', { effect: cleanEffect(eff) }); flash(r.ok ? `Mostrando ${DATA.preview_seconds}s…` : r.error); };
+    row.append(test); card.append(row); grid.append(card);
+  }
+}
+
+function buildManual() {
+  const ed = document.getElementById('manualEditor'); ed.innerHTML = '';
+  CFG._manualDraft = CFG._manualDraft || (CFG.manual ? JSON.parse(JSON.stringify(CFG.manual)) : { theme: null, colors: [[40,220,80]] });
+  ed.append(effectEditor(CFG._manualDraft, () => {}));
+  const badge = document.getElementById('manualBadge');
+  badge.textContent = CFG.manual ? 'MANUAL activo' : 'automático';
+  badge.classList.toggle('on', !!CFG.manual);
+}
+
+function payload() {
+  const states = {}; for (const s in CFG.states) states[s] = cleanEffect(CFG.states[s]);
+  return { brightness: +document.getElementById('brightness').value, manual: CFG.manual ? cleanEffect(CFG.manual) : null, states };
+}
+
+async function save(extra) {
+  const body = Object.assign(payload(), extra || {});
+  const r = await api('/api/config', body);
+  CFG = r.config; CFG._manualDraft = null;
+  buildStates(); buildManual(); flash('Guardado ✓');
+}
+
+async function init() {
+  DATA = await api('/api/config'); CFG = DATA.config;
+  const bri = document.getElementById('brightness'); bri.value = CFG.brightness;
+  document.getElementById('briVal').textContent = bri.value;
+  bri.oninput = () => document.getElementById('briVal').textContent = bri.value;
+  buildStates(); buildManual();
+  document.getElementById('save').onclick = () => save();
+  document.getElementById('reset').onclick = () => { if (confirm('¿Volver a los valores por defecto?')) { CFG = JSON.parse(JSON.stringify(DATA.defaults)); bri.value = CFG.brightness; document.getElementById('briVal').textContent = bri.value; buildStates(); buildManual(); } };
+  document.getElementById('manualOn').onclick = () => save({ manual: cleanEffect(CFG._manualDraft) });
+  document.getElementById('manualOff').onclick = () => save({ manual: null });
+  const tick = async () => { try { const s = await api('/api/status'); document.getElementById('status').textContent = s.log.join('\n'); } catch {} };
+  tick(); setInterval(tick, 3000);
+}
+init();
+</script>
+</body>
+</html>

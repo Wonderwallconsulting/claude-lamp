@@ -232,7 +232,7 @@ class TestLamp(unittest.TestCase):
     def test_state_to_color_mapping(self):
         from lamp import STATE_RGB, build_color_cmd, color_for_state, commands_for_state
         expected = {
-            "idle": (255, 180, 50),
+            "idle": (40, 220, 80),
             "thinking": (0, 220, 255),
             "happy": (40, 220, 80),
             "speaking": (255, 240, 220),
@@ -243,24 +243,100 @@ class TestLamp(unittest.TestCase):
         for state, rgb in expected.items():
             self.assertEqual(color_for_state(state), rgb)
             self.assertEqual(build_color_cmd(*rgb), f"COLOR{rgb[0]:03d}{rgb[1]:03d}{rgb[2]:03d}")
+            self.assertEqual(commands_for_state(state)[-1][:5] in ("COLOR", "THEME"), True)
 
-    def test_state_to_theme_commands(self):
-        from lamp import STATE_THEME, commands_for_state
-        for state in ("idle", "thinking", "happy", "speaking", "error", "notify"):
-            cmds = commands_for_state(state, brightness=80)
-            self.assertEqual(cmds, ["LEDON", "BRIGH080", STATE_THEME[state]], state)
-        self.assertEqual(STATE_THEME["speaking"], "THEME.WAVE1.40,220,80,255,255,255,")
-        self.assertEqual(STATE_THEME["notify"], "THEME.WAVE1.200,0,255,255,255,255,")
+    def test_default_state_commands(self):
+        from lamp import commands_for_state
+        self.assertEqual(commands_for_state("idle", brightness=80),
+                         ["LEDON", "BRIGH080", "COLOR040220080"])
+        self.assertEqual(commands_for_state("notify", brightness=80),
+                         ["LEDOFF", "LEDON", "BRIGH080", "THEME.WAVE1.200,0,255,255,255,255,"])
+        self.assertEqual(commands_for_state("thinking", brightness=80)[-1],
+                         "THEME.BEAT1.0,220,255,0,0,140,255,255,255,")
 
-    def test_theme_param_counts_match_official_docs(self):
-        # developer.moonside.design: BEAT1/BEAT3 take 3 RGB, WAVE1/PULSING1/TWINKLE1 take 2.
-        from lamp import STATE_THEME
-        expected_colors = {"BEAT1": 3, "BEAT3": 3, "WAVE1": 2, "PULSING1": 2, "TWINKLE1": 2}
-        for state, cmd in STATE_THEME.items():
-            self.assertTrue(cmd.startswith("THEME.") and cmd.endswith(","), cmd)
-            name, params = cmd[len("THEME."):].split(".", 1)
-            values = [v for v in params.split(",") if v]
-            self.assertEqual(len(values), 3 * expected_colors[name], f"{state}: {cmd}")
+    def test_build_theme_cmd_follows_official_catalog(self):
+        # developer.moonside.design: BEAT1 = 3 RGB, WAVE1 = 2, FIRE2 = 4, RAINBOW1 = speed, FIRE1 = none.
+        from lamp import THEME_CATALOG, build_theme_cmd
+        self.assertEqual(THEME_CATALOG["BEAT1"], 3)
+        self.assertEqual(THEME_CATALOG["FIRE2"], 4)
+        self.assertEqual(build_theme_cmd("WAVE1", [(1, 2, 3), (4, 5, 6)]), "THEME.WAVE1.1,2,3,4,5,6,")
+        self.assertEqual(build_theme_cmd("RAINBOW1", [], speed=20), "THEME.RAINBOW1.20,")
+        self.assertEqual(build_theme_cmd("FIRE1", []), "THEME.FIRE1.0,")
+        self.assertEqual(build_theme_cmd("fire1", [(9, 9, 9)]), "THEME.FIRE1.0,")  # extras ignored
+        with self.assertRaises(ValueError):
+            build_theme_cmd("WAVE1", [(1, 2, 3)])  # too few colours hangs the firmware
+        with self.assertRaises(ValueError):
+            build_theme_cmd("BREATH1", [(1, 2, 3)])  # not a real theme
+
+    def test_effect_commands_solid_and_theme(self):
+        from lamp import effect_commands
+        self.assertEqual(effect_commands({"theme": None, "colors": [[1, 2, 3]]}, brightness=50),
+                         ["LEDON", "BRIGH050", "COLOR001002003"])
+        self.assertEqual(effect_commands({"theme": "FIRE1", "colors": []}, brightness=50),
+                         ["LEDOFF", "LEDON", "BRIGH050", "THEME.FIRE1.0,"])
+
+    def test_config_roundtrip_and_override(self):
+        import json, tempfile
+        from lamp import DEFAULT_CONFIG, commands_for_state, load_config, save_config
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            cfg = load_config(path)  # missing file -> defaults
+            self.assertEqual(cfg, DEFAULT_CONFIG)
+            cfg["states"]["idle"] = {"theme": "PULSING1", "colors": [[1, 1, 1], [2, 2, 2]]}
+            cfg["brightness"] = 60
+            save_config(cfg, path)
+            cfg2 = load_config(path)
+            self.assertEqual(commands_for_state("idle", config=cfg2),
+                             ["LEDOFF", "LEDON", "BRIGH060", "THEME.PULSING1.1,1,1,2,2,2,"])
+            # unknown states in the file are ignored, missing ones fall back to defaults
+            path.write_text(json.dumps({"states": {"bogus": {"theme": None, "colors": [[0, 0, 0]]}}}))
+            cfg3 = load_config(path)
+            self.assertEqual(cfg3["states"]["thinking"], DEFAULT_CONFIG["states"]["thinking"])
+            self.assertNotIn("bogus", cfg3["states"])
+            # corrupt file -> defaults, never raises
+            path.write_text("{not json")
+            self.assertEqual(load_config(path), DEFAULT_CONFIG)
+
+    def test_planner_reload_preview_and_manual(self):
+        import json, os, tempfile, time
+        from lamp import LampPlanner, PREVIEW_SECONDS, save_config, load_config
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path, prev_path = Path(tmp) / "config.json", Path(tmp) / "preview.json"
+            p = LampPlanner(config_path=cfg_path, preview_path=prev_path)
+            # first call applies, repeated state is a no-op
+            self.assertEqual(p.plan("idle", 0.0)[-1], "COLOR040220080")
+            self.assertIsNone(p.plan("idle", 1.0))
+            self.assertEqual(p.plan("thinking", 2.0)[-1][:11], "THEME.BEAT1")
+            # config change is picked up without restart and re-applied
+            cfg = load_config(cfg_path)
+            cfg["states"]["thinking"] = {"theme": "FIRE1", "colors": []}
+            save_config(cfg, cfg_path)
+            os.utime(cfg_path, (time.time() + 5, time.time() + 5))  # ensure mtime differs
+            self.assertEqual(p.plan("thinking", 3.0)[-1], "THEME.FIRE1.0,")
+            # preview wins for PREVIEW_SECONDS, then the state comes back
+            prev_path.write_text(json.dumps({"ts": time.time(),
+                                             "effect": {"theme": "RAINBOW1", "colors": [], "speed": 30}}))
+            self.assertEqual(p.plan("thinking", 4.0)[-1], "THEME.RAINBOW1.30,")
+            self.assertIsNone(p.plan("idle", 5.0))  # state changes are held during preview
+            self.assertEqual(p.plan("idle", 4.0 + PREVIEW_SECONDS + 0.1)[-1], "COLOR040220080")
+            # stale preview file is ignored
+            prev_path.write_text(json.dumps({"ts": time.time() - 3600,
+                                             "effect": {"theme": "FIRE1", "colors": []}}))
+            self.assertIsNone(p.plan("idle", 20.0))
+            # manual mode holds one effect regardless of state
+            cfg["manual"] = {"theme": None, "colors": [[9, 9, 9]]}
+            save_config(cfg, cfg_path)
+            os.utime(cfg_path, (time.time() + 10, time.time() + 10))
+            self.assertEqual(p.plan("error", 21.0)[-1], "COLOR009009009")
+            self.assertIsNone(p.plan("thinking", 22.0))
+
+    def test_manual_mode_overrides_state(self):
+        from lamp import DEFAULT_CONFIG, commands_for_state
+        import copy
+        cfg = copy.deepcopy(DEFAULT_CONFIG)
+        cfg["manual"] = {"theme": "FIRE1", "colors": []}
+        self.assertEqual(commands_for_state("thinking", config=cfg)[-1], "THEME.FIRE1.0,")
+        self.assertEqual(commands_for_state("blink", config=cfg), [])
 
     def test_blink_wink_do_not_change_lamp(self):
         from lamp import color_for_state, commands_for_state
@@ -338,3 +414,44 @@ class TestLamp(unittest.TestCase):
 
         asyncio.run(run_drive())
         asyncio.run(run_demo())
+
+
+class TestPanel(unittest.TestCase):
+    def test_panel_api_roundtrip(self):
+        import json, tempfile, threading, urllib.request
+        from http.server import ThreadingHTTPServer
+        import panel
+        with tempfile.TemporaryDirectory() as tmp:
+            class H(panel.Handler):
+                config_path = Path(tmp) / "config.json"
+                preview_path = Path(tmp) / "preview.json"
+            srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            base = f"http://127.0.0.1:{srv.server_port}"
+            try:
+                def call(path, body=None):
+                    req = urllib.request.Request(base + path, data=json.dumps(body).encode() if body else None,
+                                                 headers={"Content-Type": "application/json"})
+                    with urllib.request.urlopen(req) as r:
+                        return r.status, json.loads(r.read())
+                self.assertIn(b"Murray Lamp", urllib.request.urlopen(base + "/").read())
+                status, data = call("/api/config")
+                self.assertEqual(status, 200)
+                self.assertIn("BEAT1", data["catalog"])
+                # bad theme is dropped, good one is saved
+                cfg = data["config"]
+                cfg["states"]["idle"] = {"theme": "NOPE", "colors": []}
+                cfg["states"]["error"] = {"theme": "FIRE1", "colors": []}
+                cfg["brightness"] = 42
+                status, saved = call("/api/config", cfg)
+                self.assertEqual(saved["config"]["states"]["idle"], data["defaults"]["states"]["idle"])
+                self.assertEqual(saved["config"]["states"]["error"]["theme"], "FIRE1")
+                self.assertEqual(json.loads(H.config_path.read_text())["brightness"], 42)
+                # preview writes a fresh timestamped file; invalid effect is refused
+                status, _ = call("/api/preview", {"effect": {"theme": "WAVE1", "colors": [[1,2,3],[4,5,6]]}})
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(H.preview_path.read_text())["effect"]["theme"], "WAVE1")
+                with self.assertRaises(urllib.error.HTTPError):
+                    call("/api/preview", {"effect": {"theme": "WAVE1", "colors": [[1,2,3]]}})
+            finally:
+                srv.shutdown()
