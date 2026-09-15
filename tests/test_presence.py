@@ -667,3 +667,13 @@ class TestLampStatus(unittest.TestCase):
             st.set_connected(True); st.set_connected(False)
             st.update("idle", None)
             self.assertEqual(len(notes), 2)  # re-armed after a reconnect
+
+
+class TestLampOff(unittest.TestCase):
+    def test_off_effect_and_manual_off(self):
+        from lamp import effect_commands, merge_config, commands_for_state, _valid_effect
+        self.assertEqual(effect_commands({"off": True}), ["LEDOFF"])
+        self.assertTrue(_valid_effect({"off": True}))
+        cfg = merge_config({"manual": {"off": True}})
+        self.assertEqual(cfg["manual"], {"off": True})
+        self.assertEqual(commands_for_state("error", config=cfg), ["LEDOFF"])

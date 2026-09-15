@@ -55,6 +55,8 @@
     <button id="manualTest">Probar</button>
     <button id="manualOn" class="primary">Activar manual</button>
     <button id="manualOff">Volver a automático</button>
+    <button id="lampOff" class="danger">Apagar lámpara</button>
+    <button id="lampOn">Encender</button>
   </div>
 </div>
 
@@ -141,6 +143,7 @@ function effectEditor(effect, onChange) {
 }
 
 function cleanEffect(e) {
+  if (e.off) return { off: true };
   const n = need(e.theme);
   const out = { theme: e.theme || null, colors: (e.colors || []).slice(0, Math.max(1, n)) };
   if (n === -1) out.speed = e.speed || 20;
@@ -176,10 +179,10 @@ function buildStates() {
 
 function buildManual() {
   const ed = document.getElementById('manualEditor'); ed.innerHTML = '';
-  CFG._manualDraft = CFG._manualDraft || (CFG.manual ? JSON.parse(JSON.stringify(CFG.manual)) : { theme: null, colors: [[40,220,80]] });
+  CFG._manualDraft = CFG._manualDraft || (CFG.manual && !CFG.manual.off ? JSON.parse(JSON.stringify(CFG.manual)) : { theme: null, colors: [[40,220,80]] });
   ed.append(effectEditor(CFG._manualDraft, () => {}));
   const badge = document.getElementById('manualBadge');
-  badge.textContent = CFG.manual ? 'MANUAL activo' : 'automático';
+  badge.textContent = CFG.manual ? (CFG.manual.off ? 'APAGADA' : 'MANUAL activo') : 'automático';
   badge.classList.toggle('on', !!CFG.manual);
 }
 
@@ -280,6 +283,8 @@ async function init() {
   document.getElementById('reset').onclick = () => { if (confirm('¿Volver a los valores por defecto?')) { CFG = JSON.parse(JSON.stringify(DATA.defaults)); bri.value = CFG.brightness; document.getElementById('briVal').textContent = bri.value; buildStates(); buildManual(); buildTiming(); buildAutoOff(); buildPresets(); buildAgents(); } };
   document.getElementById('manualOn').onclick = () => save({ manual: cleanEffect(CFG._manualDraft) });
   document.getElementById('manualOff').onclick = () => save({ manual: null });
+  document.getElementById('lampOff').onclick = () => save({ manual: { off: true } });
+  document.getElementById('lampOn').onclick = () => save({ manual: null });
   document.getElementById('manualTest').onclick = async () => { const r = await api('/api/preview', { effect: cleanEffect(CFG._manualDraft) }); flash(r.ok ? `Mostrando ${DATA.preview_seconds}s…` : r.error); };
   document.getElementById('presetSave').onclick = () => {
     const name = prompt('Nombre de la escena:'); if (!name) return;

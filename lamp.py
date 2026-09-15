@@ -127,7 +127,9 @@ def color_for_state(state: str) -> Optional[tuple[int, int, int]]:
 
 
 def effect_commands(effect: dict, *, brightness: Optional[int] = DEFAULT_BRIGHTNESS) -> list[str]:
-    """NUS commands for one effect dict (solid colour or catalog theme)."""
+    """NUS commands for one effect dict (solid colour, catalog theme, or {"off": true})."""
+    if effect.get("off"):
+        return ["LEDOFF"]
     theme = effect.get("theme")
     colors = effect.get("colors") or []
     if theme:
