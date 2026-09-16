@@ -12,8 +12,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from lamp import (CONFIG_PATH, DEFAULT_CONFIG, PREVIEW_PATH, PREVIEW_SECONDS, STATUS_PATH,
-                  THEME_CATALOG, _valid_effect, load_config, merge_config, save_config)
+from lamp import (CONFIG_PATH, DEFAULT_CONFIG, PREVIEW_PATH, PREVIEW_SECONDS, STATE_SCHEMES,
+                  STATUS_PATH, THEME_CATALOG, _valid_effect, load_config, merge_config, save_config)
 
 HTML_PATH = Path(__file__).with_name("panel.html")
 LOG_PATH = Path.home() / "Library/Logs/murray-lamp.log"
@@ -85,6 +85,7 @@ class Handler(BaseHTTPRequestHandler):
                 "labels": STATE_LABELS,
                 "timing_labels": TIMING_LABELS,
                 "agent_labels": AGENT_LABELS,
+                "schemes": STATE_SCHEMES,
                 "preview_seconds": PREVIEW_SECONDS,
             })
         elif self.path == "/api/status":

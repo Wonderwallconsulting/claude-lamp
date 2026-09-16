@@ -87,6 +87,67 @@ DEFAULT_CONFIG: dict = {
     },
 }
 
+def _scheme(name, idle, thinking, speaking, happy, error, notify):
+    return {"name": name, "states": {"idle": idle, "thinking": thinking, "speaking": speaking,
+                                     "happy": happy, "error": error, "notify": notify}}
+
+
+def _solid(rgb):
+    return {"theme": None, "colors": [list(rgb)]}
+
+
+def _fx(theme, *colors):
+    return {"theme": theme, "colors": [list(c) for c in colors]}
+
+
+# Curated full-state colour schemes selectable from the panel. Idle is always a
+# solid colour; notify uses a hue that contrasts with the scheme so "waiting for
+# you" is unmistakable; error is always red-based.
+STATE_SCHEMES: list[dict] = [
+    _scheme("Bosque (verde)",
+            _solid((40, 220, 80)),
+            _fx("BEAT1", (0, 200, 180), (0, 60, 30), (255, 255, 255)),
+            _fx("GRADIENT1", (40, 220, 80), (255, 240, 200)),
+            _fx("TWINKLE1", (255, 255, 255), (40, 220, 80)),
+            _fx("BEAT3", (255, 40, 40), (0, 0, 0), (255, 180, 50)),
+            _fx("WAVE1", (255, 0, 180), (255, 255, 255))),
+    _scheme("Océano",
+            _solid((0, 90, 200)),
+            _fx("WAVE1", (0, 220, 255), (0, 40, 160)),
+            _fx("GRADIENT2", (0, 230, 200), (0, 90, 200), (255, 255, 255)),
+            _fx("TWINKLE1", (255, 255, 255), (0, 230, 200)),
+            _fx("BEAT3", (255, 40, 40), (0, 0, 0), (255, 255, 255)),
+            _fx("WAVE1", (255, 140, 0), (255, 255, 255))),
+    _scheme("Atardecer",
+            _solid((255, 150, 40)),
+            _fx("BEAT2", (255, 90, 0), (120, 0, 40)),
+            _fx("GRADIENT1", (255, 80, 120), (255, 170, 40)),
+            _fx("TWINKLE1", (255, 255, 255), (255, 120, 0)),
+            _fx("BEAT3", (255, 30, 30), (0, 0, 0), (255, 255, 255)),
+            _fx("WAVE1", (170, 0, 255), (255, 120, 200))),
+    _scheme("Neón",
+            _solid((120, 0, 160)),
+            _fx("BEAT1", (0, 255, 255), (255, 0, 200), (0, 0, 120)),
+            _fx("GRADIENT2", (255, 0, 200), (0, 255, 255), (255, 255, 255)),
+            _fx("TWINKLE1", (0, 255, 255), (255, 0, 200)),
+            _fx("BEAT3", (255, 0, 0), (0, 0, 0), (255, 230, 0)),
+            _fx("WAVE1", (255, 230, 0), (255, 0, 200))),
+    _scheme("Nórdico",
+            _solid((255, 214, 170)),
+            _fx("BEAT2", (150, 200, 255), (255, 255, 255)),
+            _solid((255, 255, 255)),
+            _fx("TWINKLE1", (255, 255, 255), (150, 200, 255)),
+            _fx("BEAT3", (255, 40, 40), (0, 0, 0), (255, 255, 255)),
+            _fx("WAVE1", (255, 180, 60), (255, 255, 255))),
+    _scheme("Lava",
+            _solid((160, 30, 0)),
+            _fx("LAVA1", (255, 40, 0), (255, 140, 0), (255, 230, 80)),
+            _fx("GRADIENT1", (255, 120, 0), (255, 230, 80)),
+            _fx("TWINKLE1", (255, 255, 255), (255, 140, 0)),
+            _fx("BEAT3", (255, 255, 255), (0, 0, 0), (255, 0, 0)),
+            _fx("WAVE1", (0, 120, 255), (255, 255, 255))),
+]
+
 CONFIG_PATH = Path.home() / ".murray-lamp/config.json"
 PREVIEW_PATH = Path.home() / ".murray-lamp/preview.json"
 STATUS_PATH = Path.home() / ".murray-lamp/status.json"

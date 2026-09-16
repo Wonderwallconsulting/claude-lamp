@@ -677,3 +677,14 @@ class TestLampOff(unittest.TestCase):
         cfg = merge_config({"manual": {"off": True}})
         self.assertEqual(cfg["manual"], {"off": True})
         self.assertEqual(commands_for_state("error", config=cfg), ["LEDOFF"])
+
+
+class TestStateSchemes(unittest.TestCase):
+    def test_every_scheme_is_complete_and_valid(self):
+        from lamp import DEFAULT_CONFIG, STATE_SCHEMES, _valid_effect
+        self.assertGreaterEqual(len(STATE_SCHEMES), 5)
+        for sc in STATE_SCHEMES:
+            self.assertEqual(set(sc["states"]), set(DEFAULT_CONFIG["states"]), sc["name"])
+            for state, eff in sc["states"].items():
+                self.assertTrue(_valid_effect(eff), f"{sc['name']}/{state}: {eff}")
+            self.assertIsNone(sc["states"]["idle"]["theme"], f"{sc['name']}: idle must be solid")

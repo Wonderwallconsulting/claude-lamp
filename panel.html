@@ -39,6 +39,12 @@
 <h1>Murray Lamp <span class="badge" id="conn">…</span></h1>
 <p class="sub">Efecto y colores de la Moonside para cada estado. <b>Probar</b> lo enseña unos segundos; <b>Guardar</b> lo deja fijo.</p>
 
+<div class="row" style="margin:0 0 12px">
+  <label class="small">Combinación:</label>
+  <select id="schemeSel" style="width:auto;min-width:180px"></select>
+  <button id="schemeApply">Aplicar a todos los estados</button>
+  <span class="small">Luego prueba cada tarjeta y pulsa Guardar.</span>
+</div>
 <div class="grid" id="states"></div>
 
 <div class="card" style="margin-top:12px" id="manualCard">
@@ -186,6 +192,15 @@ function buildManual() {
   badge.classList.toggle('on', !!CFG.manual);
 }
 
+function buildSchemes() {
+  const sel = document.getElementById('schemeSel'); sel.innerHTML = '<option value="">— elegir —</option>';
+  DATA.schemes.forEach((sc, i) => { const o = document.createElement('option'); o.value = i; o.textContent = sc.name; sel.append(o); });
+  document.getElementById('schemeApply').onclick = () => {
+    const sc = DATA.schemes[+sel.value]; if (!sc) return;
+    CFG.states = JSON.parse(JSON.stringify(sc.states)); buildStates(); flash(`"${sc.name}" cargada — prueba y guarda`);
+  };
+}
+
 function buildTiming() {
   const box = document.getElementById('timing'); box.innerHTML = '';
   for (const key of Object.keys(DATA.defaults.timing)) {
@@ -278,7 +293,7 @@ async function init() {
   const bri = document.getElementById('brightness'); bri.value = CFG.brightness;
   document.getElementById('briVal').textContent = bri.value;
   bri.oninput = () => document.getElementById('briVal').textContent = bri.value;
-  buildStates(); buildManual(); buildTiming(); buildAutoOff(); buildPresets(); buildAgents();
+  buildStates(); buildManual(); buildTiming(); buildAutoOff(); buildPresets(); buildAgents(); buildSchemes();
   document.getElementById('save').onclick = () => save();
   document.getElementById('reset').onclick = () => { if (confirm('¿Volver a los valores por defecto?')) { CFG = JSON.parse(JSON.stringify(DATA.defaults)); bri.value = CFG.brightness; document.getElementById('briVal').textContent = bri.value; buildStates(); buildManual(); buildTiming(); buildAutoOff(); buildPresets(); buildAgents(); } };
   document.getElementById('manualOn').onclick = () => save({ manual: cleanEffect(CFG._manualDraft) });
