@@ -185,6 +185,47 @@ class StateMachine:
 
 
 # ---------------------------------------------------------------------------
+# iDotMatrix panel (LED Avatar.app): forward agents that have no hook of their own
+# ---------------------------------------------------------------------------
+
+LED_AVATAR_EVENT = Path.home() / ".local/bin/led-avatar-event"
+# Claude Code and Codex already call led-avatar-event from their own hooks.
+LED_AVATAR_FORWARD = {"chatgpt": "ChatGPT", "hermes": "Hermes", "cursor": "Cursor"}
+# No "waiting": Hermes "notify" means a message was delivered, not that it waits
+# for Jose, and priority-9 alerts on the panel repeat until the same source
+# sends another state. "error" is priority 9 too, so it is cleared with "done".
+LED_AVATAR_LIFECYCLE = {"thinking": "thinking", "speaking": "done", "error": "error"}
+_led_avatar_last: dict[str, str] = {}
+
+
+def led_avatar_args(state: str, agent: str | None):
+    """CLI args for led-avatar-event, or None when nothing should be forwarded."""
+    source = LED_AVATAR_FORWARD.get(agent or "")
+    if not source:
+        return None
+    lifecycle = LED_AVATAR_LIFECYCLE.get(state)
+    if lifecycle is None and _led_avatar_last.get(source) == "error":
+        lifecycle = "done"  # release the sticky alert once the error window ends
+    if lifecycle is None:
+        return None
+    _led_avatar_last[source] = lifecycle
+    return [source, lifecycle]
+
+
+def forward_to_led_avatar(state: str, agent: str | None) -> None:
+    import subprocess
+
+    args = led_avatar_args(state, agent)
+    if not args or not LED_AVATAR_EVENT.exists():
+        return
+    try:  # fire-and-forget; the adapter is fail-open and returns in milliseconds
+        subprocess.Popen([str(LED_AVATAR_EVENT), *args],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as exc:
+        log.warning("led-avatar-event failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # Incremental log tailing with rotation detection (tail -F style)
 # ---------------------------------------------------------------------------
 
@@ -423,6 +464,7 @@ async def run_daemon(args):
 
     def report(state, line):
         log.info("state -> %-8s | %s", state, line[:160])
+        forward_to_led_avatar(state, machine.agent)
 
     agent_logs, gateway_logs = hermes_log_paths()
     log.info("Tailing %d Hermes agent logs", len(agent_logs))

@@ -688,3 +688,19 @@ class TestStateSchemes(unittest.TestCase):
             for state, eff in sc["states"].items():
                 self.assertTrue(_valid_effect(eff), f"{sc['name']}/{state}: {eff}")
             self.assertIsNone(sc["states"]["idle"]["theme"], f"{sc['name']}: idle must be solid")
+
+
+class TestLedAvatarForward(unittest.TestCase):
+    def test_forward_only_agents_without_own_hooks(self):
+        from presence_daemon import led_avatar_args
+        self.assertEqual(led_avatar_args("thinking", "chatgpt"), ["ChatGPT", "thinking"])
+        self.assertEqual(led_avatar_args("speaking", "hermes"), ["Hermes", "done"])
+        self.assertEqual(led_avatar_args("error", "cursor"), ["Cursor", "error"])
+        self.assertEqual(led_avatar_args("idle", "cursor"), ["Cursor", "done"])  # clears sticky error
+        self.assertIsNone(led_avatar_args("idle", "cursor"))                     # only once
+        self.assertIsNone(led_avatar_args("notify", "chatgpt"))                  # never "waiting" (sticky)
+        self.assertIsNone(led_avatar_args("thinking", "claude"))   # Claude Code has its own hooks
+        self.assertIsNone(led_avatar_args("thinking", "codex"))
+        self.assertIsNone(led_avatar_args("idle", "chatgpt"))      # panel returns to ambient by itself
+        self.assertIsNone(led_avatar_args("happy", "hermes"))
+        self.assertIsNone(led_avatar_args("thinking", None))
