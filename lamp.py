@@ -104,6 +104,20 @@ def _fx(theme, *colors):
 # solid colour; notify uses a hue that contrasts with the scheme so "waiting for
 # you" is unmistakable; error is always red-based.
 STATE_SCHEMES: list[dict] = [
+    _scheme("Murray clásico (Mac, colores fijos)",
+            _solid((255, 180, 50)),
+            _solid((0, 220, 255)),
+            _solid((255, 240, 220)),
+            _solid((40, 220, 80)),
+            _solid((255, 40, 40)),
+            _solid((200, 0, 255))),
+    _scheme("Windows original (BEAT2)",
+            _solid((255, 180, 50)),
+            _fx("BEAT2", (255, 255, 255), (0, 0, 140)),
+            _solid((255, 180, 50)),
+            _solid((255, 180, 50)),
+            _solid((255, 40, 40)),
+            _solid((200, 0, 255))),
     _scheme("Bosque (verde)",
             _solid((40, 220, 80)),
             _fx("BEAT1", (0, 200, 180), (0, 60, 30), (255, 255, 255)),
